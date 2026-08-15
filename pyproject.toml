@@ -1,0 +1,44 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "dashai-mcp"
+version = "0.2.0"
+description = "Servidor MCP para dashAI — entrena, evalúa y consulta modelos de ML desde un agente"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+authors = [{ name = "Mario Arturo Maldonado Parra", email = "mario@boykot.cl" }]
+keywords = ["mcp", "model-context-protocol", "dashai", "machine-learning", "llm"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    "mcp>=2.0",
+    "httpx>=0.27",
+    "pydantic>=2.7",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "respx>=0.21"]
+
+[project.scripts]
+dashai-mcp = "dashai_mcp.server:main"
+
+[project.urls]
+Homepage = "https://github.com/Maarmapa/dashai-mcp"
+"dashAI" = "https://github.com/DashAISoftware/DashAI"
+
+[tool.hatch.build.targets.wheel]
+packages = ["dashai_mcp"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
