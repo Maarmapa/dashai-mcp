@@ -1,21 +1,21 @@
 #!/usr/bin/env python3
-"""Servidor MCP para dashAI — workbench de ML open source (MIT, DashAISoftware).
+"""MCP server for dashAI — open source ML workbench (MIT, DashAISoftware).
 
-dashAI expone 142 endpoints REST. Este servidor NO los envuelve todos: envolver
-una API endpoint por endpoint produce un catálogo que el modelo no sabe navegar
-y en el que elige peor. Acá hay nueve herramientas que cubren el recorrido real
-de trabajo — mirar datos, ver qué modelos hay, entrenar, seguir el job, leer
-resultados, predecir.
+dashAI exposes 142 REST endpoints. This server does NOT wrap them all: wrapping
+an API endpoint by endpoint produces a catalogue the model cannot navigate and
+in which it chooses worse. There are nine tools here, covering the actual
+working path — look at data, see which models exist, train, follow the job,
+read results, predict.
 
-La pieza central es `dashai_train_model`. En la API cruda, entrenar son TRES
-llamadas encadenadas (model-session → run → job) con campos que la interfaz
-gráfica rellena sola y que nadie documenta. Acá es una sola llamada.
+The centrepiece is `dashai_train_model`. In the raw API, training is THREE
+chained calls (model-session → run → job) with fields the GUI fills in on its
+own and that nobody documents. Here it is a single call.
 
-Qué NO hay, a propósito
------------------------
-Ninguna herramienta borra nada. dashAI no tiene autenticación ni deshacer, y un
-`DELETE /dataset/{id}` disparado por un modelo que malinterpretó una frase es
-irreversible. Borrar se hace desde la interfaz, mirando lo que se borra.
+What is deliberately absent
+---------------------------
+No tool deletes anything. dashAI has neither authentication nor undo, and a
+`DELETE /dataset/{id}` fired by a model that misread a sentence is
+irreversible. Deleting is done from the GUI, looking at what is being deleted.
 """
 
 from __future__ import annotations
@@ -33,12 +33,9 @@ from .config import base_url
 
 mcp = MCPServer(name="dashai_mcp", version=__version__)
 
-# Tipos de componente que dashAI registra y que sirven para configurar un entrenamiento.
-# Los 13 tipos del registro, verificados contra una instancia real de dashAI
-# 0.9.7 (el mensaje de error del propio backend los enumera).
-# RunStatus llega como entero. Nombres tomados de
+# RunStatus arrives as an integer. Names taken from
 # DashAI/back/core/enums/status.py (dashAI 0.9.7.post1).
-ESTADO_RUN = {
+RUN_STATUS = {
     0: "NOT_STARTED",
     1: "DELIVERED",
     2: "STARTED",
@@ -46,7 +43,9 @@ ESTADO_RUN = {
     4: "ERROR",
 }
 
-TIPOS_COMPONENTE = (
+# The 13 types in dashAI's component registry, verified against a real
+# 0.9.7 instance (the backend's own error message enumerates them).
+COMPONENT_TYPES = (
     "Task", "GenerativeTask", "Model", "GenerativeModel", "DataLoader",
     "DatasetSource", "Metric", "Optimizer", "Job", "LocalExplainer",
     "GlobalExplainer", "Explorer", "Converter",
@@ -54,25 +53,25 @@ TIPOS_COMPONENTE = (
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Utilidades compartidas
+# Shared helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _json(dato: Any) -> str:
-    return json.dumps(dato, indent=2, ensure_ascii=False, default=str)
+def _json(data: Any) -> str:
+    return json.dumps(data, indent=2, ensure_ascii=False, default=str)
 
 
 def _error(e: DashAIError) -> str:
     return f"Error: {e}"
 
 
-async def _encolar_job(job_type: str, kwargs: Dict[str, Any]) -> Any:
-    """Encola un job en dashAI.
+async def _enqueue_job(job_type: str, kwargs: Dict[str, Any]) -> Any:
+    """Enqueues a job in dashAI.
 
-    OJO: `POST /job/` NO acepta JSON. Espera **form data** con `job_type` y con
-    `kwargs` serializado como string JSON. Verificado contra dashAI 0.9.7.post1:
-    el endpoint parsea `request` a mano, y por eso su propio `openapi.json` no
-    declara ningún requestBody para esta ruta. Mandar `json=` devuelve
-    422 "Missing job_type or kwargs".
+    NOTE: `POST /job/` does NOT accept JSON. It expects **form data** with
+    `job_type` and with `kwargs` serialized as a JSON string. Verified against
+    dashAI 0.9.7.post1: the endpoint parses `request` by hand, which is why its
+    own `openapi.json` declares no requestBody for this route. Sending `json=`
+    returns 422 "Missing job_type or kwargs".
     """
     return await client.post(
         "job/",
@@ -80,8 +79,8 @@ async def _encolar_job(job_type: str, kwargs: Dict[str, Any]) -> Any:
     )
 
 
-def _resumen_dataset(d: Dict[str, Any]) -> Dict[str, Any]:
-    """Deja solo los campos que sirven para decidir, no el registro completo."""
+def _summarize_dataset(d: Dict[str, Any]) -> Dict[str, Any]:
+    """Keeps only the fields useful for deciding, not the whole record."""
     return {
         "id": d.get("id"),
         "name": d.get("name"),
@@ -91,174 +90,174 @@ def _resumen_dataset(d: Dict[str, Any]) -> Dict[str, Any]:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Modelos de entrada
+# Input models
 # ─────────────────────────────────────────────────────────────────────────────
 
-class SinArgumentos(BaseModel):
+class NoArgs(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
-class ListarDatasets(BaseModel):
+class ListDatasets(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    limit: int = Field(default=50, description="Máximo de datasets a devolver", ge=1, le=200)
+    limit: int = Field(default=50, description="Maximum number of datasets to return", ge=1, le=200)
 
 
-class DescribirDataset(BaseModel):
+class DescribeDataset(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    dataset_id: int = Field(..., description="Id del dataset, tal como lo lista dashai_list_datasets", ge=1)
+    dataset_id: int = Field(..., description="Dataset id, as listed by dashai_list_datasets", ge=1)
     include_sample: bool = Field(
         default=True,
-        description="Incluir ~10 filas de muestra. Ponlo en false si el dataset tiene columnas muy anchas.",
+        description="Include ~10 sample rows. Set to false if the dataset has very wide columns.",
     )
 
 
-class ListarComponentes(BaseModel):
+class ListComponents(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     types: Optional[List[str]] = Field(
         default=None,
         description=(
-            "Filtra por tipo de componente. Valores válidos: 'Model', 'Metric', 'Task', "
-            "'Optimizer'. Sin filtro devuelve todo el registro, que es largo."
+            "Filter by component type. Valid values: 'Model', 'Metric', 'Task', "
+            "'Optimizer'. With no filter it returns the whole registry, which is long."
         ),
     )
 
     @field_validator("types")
     @classmethod
-    def validar_tipos(cls, v: Optional[List[str]]) -> Optional[List[str]]:
+    def validate_types(cls, v: Optional[List[str]]) -> Optional[List[str]]:
         if v is None:
             return v
-        desconocidos = [t for t in v if t not in TIPOS_COMPONENTE]
-        if desconocidos:
+        unknown = [t for t in v if t not in COMPONENT_TYPES]
+        if unknown:
             raise ValueError(
-                f"Tipos no reconocidos: {desconocidos}. Usa alguno de {list(TIPOS_COMPONENTE)}."
+                f"Unrecognized types: {unknown}. Use one of {list(COMPONENT_TYPES)}."
             )
         return v
 
 
-class EntrenarModelo(BaseModel):
-    """Todo lo necesario para el recorrido completo model-session → run → job."""
+class TrainModel(BaseModel):
+    """Everything needed for the full model-session → run → job path."""
 
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
-    dataset_id: int = Field(..., description="Id del dataset a usar", ge=1)
+    dataset_id: int = Field(..., description="Id of the dataset to use", ge=1)
     task_name: str = Field(
         ...,
         description=(
-            "Nombre exacto de la tarea, de dashai_list_components(types=['Task']). "
-            "Ej: 'TabularClassificationTask', 'TextClassificationTask'."
+            "Exact task name, from dashai_list_components(types=['Task']). "
+            "E.g. 'TabularClassificationTask', 'TextClassificationTask'."
         ),
         min_length=1,
     )
     model_name: str = Field(
         ...,
         description=(
-            "Nombre exacto del modelo, de dashai_list_components(types=['Model']). "
-            "Ej: 'RandomForestClassifier', 'DistilBertTransformer'. Sensible a mayúsculas."
+            "Exact model name, from dashai_list_components(types=['Model']). "
+            "E.g. 'RandomForestClassifier', 'DistilBertTransformer'. Case-sensitive."
         ),
         min_length=1,
     )
-    input_columns: List[str] = Field(..., description="Columnas de entrada (features)", min_length=1)
-    output_columns: List[str] = Field(..., description="Columnas de salida (target)", min_length=1)
+    input_columns: List[str] = Field(..., description="Input columns (features)", min_length=1)
+    output_columns: List[str] = Field(..., description="Output columns (target)", min_length=1)
     metrics: List[str] = Field(
         ...,
         description=(
-            "Métricas a calcular, de dashai_list_components(types=['Metric']). "
-            "Ej: ['Accuracy', 'F1']. Se aplican a train, validación y test."
+            "Metrics to compute, from dashai_list_components(types=['Metric']). "
+            "E.g. ['Accuracy', 'F1']. Applied to train, validation and test."
         ),
         min_length=1,
     )
     goal_metric: str = Field(
         ...,
-        description="Métrica que se optimiza y por la que se compara. Debe estar dentro de `metrics`.",
+        description="Metric that is optimized and compared against. Must be one of `metrics`.",
         min_length=1,
     )
     parameters: Dict[str, Any] = Field(
         default_factory=dict,
-        description="Hiperparámetros del modelo. Vacío usa los de dashAI. Ej: {'n_estimators': 100}",
+        description="Model hyperparameters. Empty uses dashAI's defaults. E.g. {'n_estimators': 100}",
     )
     splits: Dict[str, float] = Field(
         default_factory=lambda: {"train": 0.7, "validation": 0.15, "test": 0.15},
-        description="Proporciones de división. Las tres claves deben sumar 1.0.",
+        description="Split proportions. The three keys must add up to 1.0.",
     )
     optimizer_name: str = Field(
         default="",
-        description="Optimizador de hiperparámetros (opcional). Vacío entrena una sola vez.",
+        description="Hyperparameter optimizer (optional). Empty trains once.",
     )
-    optimizer_parameters: Dict[str, Any] = Field(default_factory=dict, description="Parámetros del optimizador")
-    run_name: Optional[str] = Field(default=None, description="Nombre para identificar la corrida", max_length=200)
+    optimizer_parameters: Dict[str, Any] = Field(default_factory=dict, description="Optimizer parameters")
+    run_name: Optional[str] = Field(default=None, description="Name to identify the run", max_length=200)
 
     @field_validator("splits")
     @classmethod
-    def validar_splits(cls, v: Dict[str, float]) -> Dict[str, float]:
-        faltan = {"train", "validation", "test"} - set(v)
-        if faltan:
-            raise ValueError(f"A splits le faltan las claves {sorted(faltan)}")
+    def validate_splits(cls, v: Dict[str, float]) -> Dict[str, float]:
+        missing = {"train", "validation", "test"} - set(v)
+        if missing:
+            raise ValueError(f"splits is missing the keys {sorted(missing)}")
         total = sum(v.values())
         if abs(total - 1.0) > 1e-6:
-            raise ValueError(f"Las proporciones de splits suman {total}, deben sumar 1.0")
+            raise ValueError(f"The split proportions add up to {total}, they must add up to 1.0")
         return v
 
 
-class EstadoJob(BaseModel):
+class JobStatus(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    job_id: str = Field(..., description="Id de job devuelto por dashai_train_model o dashai_predict", min_length=1)
+    job_id: str = Field(..., description="Job id returned by dashai_train_model or dashai_predict", min_length=1)
 
 
-class ListarRuns(BaseModel):
+class ListRuns(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    model_session_id: Optional[int] = Field(default=None, description="Filtra por sesión de modelo (experimento)", ge=1)
-    limit: int = Field(default=50, description="Máximo de corridas a devolver", ge=1, le=200)
+    model_session_id: Optional[int] = Field(default=None, description="Filter by model session (experiment)", ge=1)
+    limit: int = Field(default=50, description="Maximum number of runs to return", ge=1, le=200)
 
 
-class ObtenerRun(BaseModel):
+class GetRun(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    run_id: int = Field(..., description="Id de la corrida", ge=1)
+    run_id: int = Field(..., description="Run id", ge=1)
 
 
-class Predecir(BaseModel):
+class Predict(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    run_id: int = Field(..., description="Id de una corrida ya terminada (status FINISHED)", ge=1)
+    run_id: int = Field(..., description="Id of an already finished run (status FINISHED)", ge=1)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Herramientas
+# Tools
 # ─────────────────────────────────────────────────────────────────────────────
 
 @mcp.tool(
     name="dashai_server_info",
-    annotations=ToolAnnotations(title="Estado del servidor dashAI", read_only_hint=True, destructive_hint=False, idempotent_hint=True, open_world_hint=True),)
-async def dashai_server_info(params: SinArgumentos) -> str:
-    """Comprueba que dashAI esté corriendo y resume qué hay cargado.
+    annotations=ToolAnnotations(title="dashAI server status", read_only_hint=True, destructive_hint=False, idempotent_hint=True, open_world_hint=True),)
+async def dashai_server_info(params: NoArgs) -> str:
+    """Checks that dashAI is running and summarizes what is loaded.
 
-    Llama a esto PRIMERO cuando algo falla o cuando no sabes si el backend está
-    levantado: distingue "dashAI está apagado" de "el id no existe", que son dos
-    problemas con soluciones distintas.
+    Call this FIRST when something fails or when you do not know whether the
+    backend is up: it tells "dashAI is down" apart from "that id does not
+    exist", which are two problems with different fixes.
 
     Args:
-        params (SinArgumentos): sin parámetros.
+        params (NoArgs): no parameters.
 
     Returns:
-        str: JSON con el siguiente esquema:
+        str: JSON with the following schema:
         {
-            "base_url": str,      # a qué instancia se está apuntando
-            "reachable": bool,    # si respondió
-            "datasets": int,      # cantidad de datasets cargados
-            "runs": int,          # cantidad de corridas registradas
-            "queue_empty": bool   # si la cola de jobs está vacía
+            "base_url": str,      # which instance is being targeted
+            "reachable": bool,    # whether it responded
+            "datasets": int,      # number of loaded datasets
+            "runs": int,          # number of recorded runs
+            "queue_empty": bool   # whether the job queue is empty
         }
-        Ante fallo: "Error: <qué pasó y qué hacer>".
+        On failure: "Error: <what happened and what to do>".
     """
     try:
         datasets = await client.get("dataset/")
         runs = await client.get("run/")
-        cola = await client.get("job/is_empty")
+        queue = await client.get("job/is_empty")
     except DashAIError as e:
         return _error(e)
 
@@ -268,164 +267,164 @@ async def dashai_server_info(params: SinArgumentos) -> str:
             "reachable": True,
             "datasets": len(datasets or []),
             "runs": len(runs or []),
-            "queue_empty": cola.get("is_empty") if isinstance(cola, dict) else cola,
+            "queue_empty": queue.get("is_empty") if isinstance(queue, dict) else queue,
         }
     )
 
 
 @mcp.tool(
     name="dashai_list_datasets",
-    annotations=ToolAnnotations(title="Listar datasets", read_only_hint=True, destructive_hint=False, idempotent_hint=True, open_world_hint=True),)
-async def dashai_list_datasets(params: ListarDatasets) -> str:
-    """Lista los datasets cargados en dashAI.
+    annotations=ToolAnnotations(title="List datasets", read_only_hint=True, destructive_hint=False, idempotent_hint=True, open_world_hint=True),)
+async def dashai_list_datasets(params: ListDatasets) -> str:
+    """Lists the datasets loaded in dashAI.
 
-    Devuelve solo id, nombre, fecha y estado — lo justo para elegir uno. Para ver
-    columnas y tipos usa dashai_describe_dataset con el id.
+    Returns only id, name, date and status — just enough to pick one. To see
+    columns and types use dashai_describe_dataset with the id.
 
     Args:
-        params (ListarDatasets): contiene:
-            - limit (int): máximo a devolver, 1-200 (default 50)
+        params (ListDatasets): contains:
+            - limit (int): maximum to return, 1-200 (default 50)
 
     Returns:
         str: JSON {"count": int, "datasets": [{"id", "name", "created", "status"}]}
-        Si no hay ninguno: mensaje indicando cómo cargar datos desde la interfaz.
+        If there are none: a message explaining how to load data from the GUI.
     """
     try:
-        datos = await client.get("dataset/")
+        data = await client.get("dataset/")
     except DashAIError as e:
         return _error(e)
 
-    datasets = [_resumen_dataset(d) for d in (datos or [])][: params.limit]
+    datasets = [_summarize_dataset(d) for d in (data or [])][: params.limit]
     if not datasets:
         return (
-            "No hay datasets cargados en dashAI. Súbelos desde la interfaz gráfica "
-            f"({base_url()}) — este servidor no carga archivos a propósito."
+            "There are no datasets loaded in dashAI. Upload them from the GUI "
+            f"({base_url()}) — this server deliberately does not upload files."
         )
     return _json({"count": len(datasets), "datasets": datasets})
 
 
 @mcp.tool(
     name="dashai_describe_dataset",
-    annotations=ToolAnnotations(title="Describir un dataset", read_only_hint=True, destructive_hint=False, idempotent_hint=True, open_world_hint=True),)
-async def dashai_describe_dataset(params: DescribirDataset) -> str:
-    """Devuelve todo lo necesario para configurar un entrenamiento sobre un dataset.
+    annotations=ToolAnnotations(title="Describe a dataset", read_only_hint=True, destructive_hint=False, idempotent_hint=True, open_world_hint=True),)
+async def dashai_describe_dataset(params: DescribeDataset) -> str:
+    """Returns everything needed to configure a training run over a dataset.
 
-    Junta en una sola llamada lo que en la API cruda son cuatro (`/{id}`, `/info`,
-    `/types` y `/sample`), porque para decidir qué columnas son entrada y cuál es
-    salida hace falta verlas juntas.
+    Gathers into a single call what the raw API splits into four (`/{id}`,
+    `/info`, `/types` and `/sample`), because deciding which columns are input
+    and which is output requires seeing them together.
 
     Args:
-        params (DescribirDataset): contiene:
-            - dataset_id (int): id del dataset
-            - include_sample (bool): incluir filas de muestra (default True)
+        params (DescribeDataset): contains:
+            - dataset_id (int): dataset id
+            - include_sample (bool): include sample rows (default True)
 
     Returns:
         str: JSON {"dataset": {...}, "info": {...}, "column_types": {...}, "sample": [...]}
-        Si una parte no está disponible, viene como null en vez de fallar entera.
+        If one part is unavailable it comes back as null instead of failing whole.
     """
     try:
         dataset = await client.get(f"dataset/{params.dataset_id}")
     except DashAIError as e:
         return _error(e)
 
-    # Las secundarias no deben tumbar la respuesta: un dataset recién creado
-    # todavía no tiene tipos ni muestra.
-    async def _opcional(path: str) -> Any:
+    # The secondary calls must not take down the response: a freshly created
+    # dataset has neither types nor a sample yet.
+    async def _optional(path: str) -> Any:
         try:
             return await client.get(path)
         except DashAIError:
             return None
 
-    info = await _opcional(f"dataset/{params.dataset_id}/info")
-    tipos = await _opcional(f"dataset/{params.dataset_id}/types")
-    muestra = await _opcional(f"dataset/{params.dataset_id}/sample") if params.include_sample else None
+    info = await _optional(f"dataset/{params.dataset_id}/info")
+    types = await _optional(f"dataset/{params.dataset_id}/types")
+    sample = await _optional(f"dataset/{params.dataset_id}/sample") if params.include_sample else None
 
-    return _json({"dataset": dataset, "info": info, "column_types": tipos, "sample": muestra})
+    return _json({"dataset": dataset, "info": info, "column_types": types, "sample": sample})
 
 
 @mcp.tool(
     name="dashai_list_components",
-    annotations=ToolAnnotations(title="Listar modelos, métricas y tareas disponibles", read_only_hint=True, destructive_hint=False, idempotent_hint=True, open_world_hint=True),)
-async def dashai_list_components(params: ListarComponentes) -> str:
-    """Lista los componentes registrados: modelos, métricas, tareas y optimizadores.
+    annotations=ToolAnnotations(title="List available models, metrics and tasks", read_only_hint=True, destructive_hint=False, idempotent_hint=True, open_world_hint=True),)
+async def dashai_list_components(params: ListComponents) -> str:
+    """Lists the registered components: models, metrics, tasks and optimizers.
 
-    Úsalo SIEMPRE antes de dashai_train_model. Los nombres que espera dashAI son
-    exactos y sensibles a mayúsculas, y el catálogo cambia según los plugins que
-    tenga instalados esa instancia — no se pueden adivinar.
+    ALWAYS use this before dashai_train_model. The names dashAI expects are
+    exact and case-sensitive, and the catalogue changes with the plugins that
+    instance has installed — they cannot be guessed.
 
     Args:
-        params (ListarComponentes): contiene:
-            - types (Optional[List[str]]): filtro por 'Model', 'Metric', 'Task', 'Optimizer'
+        params (ListComponents): contains:
+            - types (Optional[List[str]]): filter by 'Model', 'Metric', 'Task', 'Optimizer'
 
     Returns:
         str: JSON {"count": int, "components": [{"name": str, "type": str, "schema": {...}}]}
-        El campo `schema` describe los hiperparámetros aceptados por ese componente.
+        The `schema` field describes the hyperparameters that component accepts.
     """
-    # httpx serializa una lista como parámetros repetidos
-    # (?select_types=Task&select_types=Model), que es lo que el backend espera.
-    # OJO: la doc de dashAI muestra ?select_types=["Model","Metric"] y NO funciona.
+    # httpx serializes a list as repeated parameters
+    # (?select_types=Task&select_types=Model), which is what the backend expects.
+    # NOTE: dashAI's docs show ?select_types=["Model","Metric"] and it does NOT work.
     query = {"select_types": params.types} if params.types else {}
 
     try:
-        datos = await client.get("component/", params=query)
+        data = await client.get("component/", params=query)
     except DashAIError as e:
         return _error(e)
 
-    componentes = datos or []
-    return _json({"count": len(componentes), "components": componentes})
+    components = data or []
+    return _json({"count": len(components), "components": components})
 
 
 @mcp.tool(
     name="dashai_train_model",
-    annotations=ToolAnnotations(title="Entrenar un modelo", read_only_hint=False, destructive_hint=False, idempotent_hint=False, open_world_hint=True),)
-async def dashai_train_model(params: EntrenarModelo) -> str:
-    """Entrena un modelo sobre un dataset y devuelve el id del job encolado.
+    annotations=ToolAnnotations(title="Train a model", read_only_hint=False, destructive_hint=False, idempotent_hint=False, open_world_hint=True),)
+async def dashai_train_model(params: TrainModel) -> str:
+    """Trains a model on a dataset and returns the id of the enqueued job.
 
-    NO espera a que termine. Entrenar puede tomar minutos u horas, así que dashAI
-    lo encola y esta herramienta devuelve de inmediato; el avance se consulta con
-    dashai_job_status.
+    It does NOT wait for it to finish. Training can take minutes or hours, so
+    dashAI enqueues it and this tool returns immediately; progress is polled
+    with dashai_job_status.
 
-    Colapsa las tres llamadas que exige la API cruda:
-      1. POST /model-session/  crea el experimento (dataset, tarea, columnas, métricas)
-      2. POST /run/            crea la corrida (modelo, hiperparámetros)
-      3. POST /job/            encola el ModelJob
+    Collapses the three calls the raw API demands:
+      1. POST /model-session/  creates the experiment (dataset, task, columns, metrics)
+      2. POST /run/            creates the run (model, hyperparameters)
+      3. POST /job/            enqueues the ModelJob
 
     Args:
-        params (EntrenarModelo): contiene:
+        params (TrainModel): contains:
             - dataset_id (int), task_name (str), model_name (str)
             - input_columns / output_columns (List[str])
             - metrics (List[str]), goal_metric (str)
-            - parameters (Dict): hiperparámetros del modelo
-            - splits (Dict[str, float]): proporciones que suman 1.0
+            - parameters (Dict): model hyperparameters
+            - splits (Dict[str, float]): proportions adding up to 1.0
             - optimizer_name (str), optimizer_parameters (Dict)
             - run_name (Optional[str])
 
     Returns:
         str: JSON {"job_id": str, "run_id": int, "model_session_id": int, "status": "enqueued", "next_step": str}
-        Ante fallo: "Error: ..." indicando qué parámetro rechazó dashAI.
+        On failure: "Error: ..." stating which parameter dashAI rejected.
 
     Examples:
-        - "Entrena un random forest sobre el dataset 3 prediciendo 'species'"
-        - No lo uses para ver resultados: eso es dashai_get_run, ya con el run_id.
+        - "Train a random forest on dataset 3 predicting 'species'"
+        - Do not use it to read results: that is dashai_get_run, with the run_id.
     """
     if params.goal_metric not in params.metrics:
         return (
-            f"Error: goal_metric '{params.goal_metric}' no está en metrics {params.metrics}. "
-            "La métrica objetivo tiene que ser una de las que se calculan."
+            f"Error: goal_metric '{params.goal_metric}' is not in metrics {params.metrics}. "
+            "The goal metric has to be one of the metrics being computed."
         )
 
-    nombre = params.run_name or f"{params.model_name} sobre dataset {params.dataset_id}"
+    name = params.run_name or f"{params.model_name} on dataset {params.dataset_id}"
 
     try:
-        # 1. Sesión de modelo (experimento).
-        # `splits` viaja como string JSON: dashAI lo declara como str, no como dict,
-        # aunque su documentación lo muestre como objeto.
-        sesion = await client.post(
+        # 1. Model session (experiment).
+        # `splits` travels as a JSON string: dashAI declares it as str, not dict,
+        # even though its documentation shows it as an object.
+        session = await client.post(
             "model-session/",
             json={
                 "dataset_id": params.dataset_id,
                 "task_name": params.task_name,
-                "name": nombre,
+                "name": name,
                 "input_columns": params.input_columns,
                 "output_columns": params.output_columns,
                 "train_metrics": params.metrics,
@@ -434,16 +433,16 @@ async def dashai_train_model(params: EntrenarModelo) -> str:
                 "splits": json.dumps(params.splits),
             },
         )
-        session_id = sesion["id"]
+        session_id = session["id"]
 
-        # 2. Corrida. Los plot_*_path son obligatorios en el esquema pero los
-        # rellena el job al optimizar; van vacíos.
+        # 2. Run. The plot_*_path fields are required by the schema but the job
+        # fills them in while optimizing; they go empty.
         run = await client.post(
             "run/",
             json={
                 "model_session_id": session_id,
                 "model_name": params.model_name,
-                "name": nombre,
+                "name": name,
                 "parameters": params.parameters,
                 "optimizer_name": params.optimizer_name,
                 "optimizer_parameters": params.optimizer_parameters,
@@ -456,13 +455,13 @@ async def dashai_train_model(params: EntrenarModelo) -> str:
         )
         run_id = run["id"]
 
-        # 3. Encolar.
-        job = await _encolar_job("ModelJob", {"run_id": run_id})
+        # 3. Enqueue.
+        job = await _enqueue_job("ModelJob", {"run_id": run_id})
 
     except DashAIError as e:
         return _error(e)
     except (KeyError, TypeError) as e:
-        return f"Error: dashAI respondió con una forma inesperada ({e}). Revisa su versión."
+        return f"Error: dashAI responded with an unexpected shape ({e}). Check its version."
 
     job_id = job.get("id") if isinstance(job, dict) else job
 
@@ -473,8 +472,8 @@ async def dashai_train_model(params: EntrenarModelo) -> str:
             "model_session_id": session_id,
             "status": "enqueued",
             "next_step": (
-                f"Consulta el avance con dashai_job_status(job_id='{job_id}'). "
-                f"Cuando termine, los resultados están en dashai_get_run(run_id={run_id})."
+                f"Poll progress with dashai_job_status(job_id='{job_id}'). "
+                f"When it finishes, the results are in dashai_get_run(run_id={run_id})."
             ),
         }
     )
@@ -482,50 +481,50 @@ async def dashai_train_model(params: EntrenarModelo) -> str:
 
 @mcp.tool(
     name="dashai_job_status",
-    annotations=ToolAnnotations(title="Estado de un job", read_only_hint=True, destructive_hint=False, idempotent_hint=True, open_world_hint=True),)
-async def dashai_job_status(params: EstadoJob) -> str:
-    """Consulta el estado de un job encolado (entrenamiento, predicción, explicación).
+    annotations=ToolAnnotations(title="Job status", read_only_hint=True, destructive_hint=False, idempotent_hint=True, open_world_hint=True),)
+async def dashai_job_status(params: JobStatus) -> str:
+    """Polls the status of an enqueued job (training, prediction, explanation).
 
-    Estados de dashAI: `not_started` (en cola), `started` (corriendo), `finished`
-    (listo) y `error` (falló). Distinguir `started` de `error` importa: el primero
-    se espera, el segundo no mejora por reintentar la consulta.
+    dashAI's statuses: `not_started` (queued), `started` (running), `finished`
+    (done) and `error` (failed). Telling `started` from `error` matters: the
+    first is worth waiting on, the second does not improve by polling again.
 
     Args:
-        params (EstadoJob): contiene:
-            - job_id (str): id devuelto al encolar
+        params (JobStatus): contains:
+            - job_id (str): id returned when enqueuing
 
     Returns:
         str: JSON {"job_id": str, "status": str, "finished": bool, "failed": bool, "raw": {...}}
     """
     try:
-        datos = await client.get(f"job/status/{params.job_id}")
+        data = await client.get(f"job/status/{params.job_id}")
     except DashAIError as e:
         return _error(e)
 
-    estado = datos.get("status") if isinstance(datos, dict) else str(datos)
+    status = data.get("status") if isinstance(data, dict) else str(data)
     return _json(
         {
             "job_id": params.job_id,
-            "status": estado,
-            "finished": estado == "finished",
-            "failed": estado == "error",
-            "raw": datos,
+            "status": status,
+            "finished": status == "finished",
+            "failed": status == "error",
+            "raw": data,
         }
     )
 
 
 @mcp.tool(
     name="dashai_list_runs",
-    annotations=ToolAnnotations(title="Listar corridas de entrenamiento", read_only_hint=True, destructive_hint=False, idempotent_hint=True, open_world_hint=True),)
-async def dashai_list_runs(params: ListarRuns) -> str:
-    """Lista las corridas de entrenamiento registradas, con su estado.
+    annotations=ToolAnnotations(title="List training runs", read_only_hint=True, destructive_hint=False, idempotent_hint=True, open_world_hint=True),)
+async def dashai_list_runs(params: ListRuns) -> str:
+    """Lists the recorded training runs, with their status.
 
-    Sirve para comparar modelos entrenados sobre el mismo experimento.
+    Useful for comparing models trained within the same experiment.
 
     Args:
-        params (ListarRuns): contiene:
-            - model_session_id (Optional[int]): filtra por experimento
-            - limit (int): máximo a devolver, 1-200 (default 50)
+        params (ListRuns): contains:
+            - model_session_id (Optional[int]): filter by experiment
+            - limit (int): maximum to return, 1-200 (default 50)
 
     Returns:
         str: JSON {"count": int, "runs": [{"id", "name", "model_name", "status", "goal_metric"}]}
@@ -535,7 +534,7 @@ async def dashai_list_runs(params: ListarRuns) -> str:
         query["model_session_id"] = params.model_session_id
 
     try:
-        datos = await client.get("run/", params=query)
+        data = await client.get("run/", params=query)
     except DashAIError as e:
         return _error(e)
 
@@ -547,73 +546,74 @@ async def dashai_list_runs(params: ListarRuns) -> str:
             "status": r.get("status"),
             "goal_metric": r.get("goal_metric"),
         }
-        for r in (datos or [])
+        for r in (data or [])
     ][: params.limit]
 
     if not runs:
-        return "No hay corridas registradas todavía. Entrena una con dashai_train_model."
+        return "There are no runs recorded yet. Train one with dashai_train_model."
     return _json({"count": len(runs), "runs": runs})
 
 
 @mcp.tool(
     name="dashai_get_run",
-    annotations=ToolAnnotations(title="Resultados de una corrida", read_only_hint=True, destructive_hint=False, idempotent_hint=True, open_world_hint=True),)
-async def dashai_get_run(params: ObtenerRun) -> str:
-    """Devuelve la configuración y las métricas de una corrida de entrenamiento.
+    annotations=ToolAnnotations(title="Results of a run", read_only_hint=True, destructive_hint=False, idempotent_hint=True, open_world_hint=True),)
+async def dashai_get_run(params: GetRun) -> str:
+    """Returns the configuration and metrics of a training run.
 
-    Es donde se leen los resultados una vez que dashai_job_status dice `finished`.
-    Si la corrida no terminó, las métricas vendrán vacías — eso no es un error.
+    This is where results are read once dashai_job_status says `finished`. If
+    the run did not finish, the metrics will come back empty — that is not an
+    error.
 
     Args:
-        params (ObtenerRun): contiene:
-            - run_id (int): id de la corrida
+        params (GetRun): contains:
+            - run_id (int): run id
 
     Returns:
-        str: JSON con la corrida completa: parámetros del modelo, estado y métricas
-        por split (train / validation / test).
+        str: JSON with the full run: model parameters, status and metrics per
+        split (train / validation / test).
     """
     try:
         run = await client.get(f"run/{params.run_id}")
     except DashAIError as e:
         return _error(e)
 
-    # `split_indexes` trae la lista completa de índices por partición: en un
-    # dataset de 10.000 filas son ~59 KB, el 99% de la respuesta, y no le sirve
-    # de nada a quien lee. Se reemplaza por el conteo.
-    indices = run.pop("split_indexes", None)
-    if indices:
+    # `split_indexes` carries the full list of indices per split: on a
+    # 10,000-row dataset that is ~59 KB, 99% of the response, and it is of no
+    # use to whoever reads it. It is replaced by the counts.
+    indexes = run.pop("split_indexes", None)
+    if indexes:
         try:
-            cargado = json.loads(indices) if isinstance(indices, str) else indices
-            run["split_sizes"] = {k: len(v) for k, v in cargado.items()}
+            loaded = json.loads(indexes) if isinstance(indexes, str) else indexes
+            run["split_sizes"] = {k: len(v) for k, v in loaded.items()}
         except (ValueError, TypeError):
             run["split_sizes"] = None
 
-    # El estado viaja como entero; se agrega su nombre sin quitar el original.
+    # The status travels as an integer; its name is added without removing the original.
     if isinstance(run.get("status"), int):
-        run["status_name"] = ESTADO_RUN.get(run["status"], "DESCONOCIDO")
+        run["status_name"] = RUN_STATUS.get(run["status"], "UNKNOWN")
 
     return _json(run)
 
 
 @mcp.tool(
     name="dashai_predict",
-    annotations=ToolAnnotations(title="Predecir con un modelo entrenado", read_only_hint=False, destructive_hint=False, idempotent_hint=False, open_world_hint=True),)
-async def dashai_predict(params: Predecir) -> str:
-    """Encola una predicción usando el modelo de una corrida ya terminada.
+    annotations=ToolAnnotations(title="Predict with a trained model", read_only_hint=False, destructive_hint=False, idempotent_hint=False, open_world_hint=True),)
+async def dashai_predict(params: Predict) -> str:
+    """Enqueues a prediction using the model of an already finished run.
 
-    Igual que entrenar, es asíncrono: devuelve un job_id y el resultado se sigue
-    con dashai_job_status. La corrida debe estar en estado FINISHED; si no, dashAI
-    rechaza la petición.
+    Like training, it is asynchronous: it returns a job_id and the result is
+    followed with dashai_job_status. The run must be in FINISHED status; if it
+    is not, dashAI rejects the request.
 
     Args:
-        params (Predecir): contiene:
-            - run_id (int): id de una corrida terminada
+        params (Predict): contains:
+            - run_id (int): id of a finished run
 
     Returns:
         str: JSON {"job_id": str, "run_id": int, "status": "enqueued", "next_step": str}
     """
     try:
-        job = await _encolar_job("PredictJob", {"run_id": params.run_id})
+        job = await _enqueue_job("PredictJob", {"run_id": params.run_id})
     except DashAIError as e:
         return _error(e)
 
@@ -623,13 +623,13 @@ async def dashai_predict(params: Predecir) -> str:
             "job_id": str(job_id),
             "run_id": params.run_id,
             "status": "enqueued",
-            "next_step": f"Sigue el avance con dashai_job_status(job_id='{job_id}').",
+            "next_step": f"Follow progress with dashai_job_status(job_id='{job_id}').",
         }
     )
 
 
 def main() -> None:
-    """Punto de entrada. Transporte stdio: dashAI es local y sin autenticación."""
+    """Entry point. stdio transport: dashAI is local and unauthenticated."""
     mcp.run(transport="stdio")
 
 

@@ -1,8 +1,8 @@
-"""Cliente HTTP compartido y traducción de errores.
+"""Shared HTTP client and error translation.
 
-Todos los errores se devuelven como texto accionable en vez de una traza: el
-que lee esto es un modelo que tiene que decidir el siguiente paso, y "Connection
-refused" no le dice que falta levantar dashAI.
+Every error comes back as actionable text instead of a traceback: whoever reads
+this is a model that has to decide the next step, and "Connection refused" does
+not tell it that dashAI needs to be started.
 """
 
 from __future__ import annotations
@@ -15,11 +15,11 @@ from .config import TIMEOUT_SECONDS, ConfigError, api_url, base_url
 
 
 class DashAIError(RuntimeError):
-    """Error ya traducido a algo que se le puede mostrar a un agente."""
+    """An error already translated into something an agent can be shown."""
 
 
 def _detalle_http(exc: httpx.HTTPStatusError) -> str:
-    """Extrae el `detail` de FastAPI, que suele explicar exactamente qué faltó."""
+    """Pulls FastAPI's `detail`, which usually explains exactly what was missing."""
     try:
         cuerpo = exc.response.json()
     except ValueError:
@@ -30,9 +30,9 @@ def _detalle_http(exc: httpx.HTTPStatusError) -> str:
 
 
 async def request(method: str, path: str, **kwargs: Any) -> Any:
-    """Llama a la API v1 de dashAI y devuelve el JSON ya decodificado.
+    """Calls dashAI's v1 API and returns the decoded JSON.
 
-    Lanza DashAIError con un mensaje accionable ante cualquier fallo.
+    Raises DashAIError with an actionable message on any failure.
     """
     try:
         url = api_url(path)
@@ -49,18 +49,18 @@ async def request(method: str, path: str, **kwargs: Any) -> Any:
 
     except httpx.ConnectError as e:
         raise DashAIError(
-            f"No hay respuesta de dashAI en {base_url()}.\n"
-            "Comprueba que esté corriendo: ejecuta `dashai` en una terminal (levanta "
-            "el backend en el puerto 8000) o abre la aplicación de escritorio.\n"
-            "Si lo tienes en otro puerto, ajusta DASHAI_BASE_URL."
+            f"No response from dashAI at {base_url()}.\n"
+            "Check that it is running: run `dashai` in a terminal (it starts the "
+            "backend on port 8000) or open the desktop app.\n"
+            "If you have it on another port, adjust DASHAI_BASE_URL."
         ) from e
 
     except httpx.TimeoutException as e:
         raise DashAIError(
-            f"dashAI no respondió en {TIMEOUT_SECONDS:.0f} s. Las operaciones largas "
-            "(entrenar, explicar, predecir) NO se esperan por HTTP: se encolan como "
-            "job y se consultan con dashai_job_status. Si el que expiró fue un listado, "
-            "sube DASHAI_TIMEOUT."
+            f"dashAI did not respond within {TIMEOUT_SECONDS:.0f} s. Long operations "
+            "(training, explaining, predicting) are NOT waited on over HTTP: they are "
+            "enqueued as a job and polled with dashai_job_status. If what timed out "
+            "was a listing, raise DASHAI_TIMEOUT."
         ) from e
 
     except httpx.HTTPStatusError as e:
@@ -69,18 +69,18 @@ async def request(method: str, path: str, **kwargs: Any) -> Any:
 
         if codigo == 404:
             raise DashAIError(
-                f"dashAI no encontró el recurso ({detalle}). Verifica el id con la "
-                "herramienta de listado correspondiente antes de reintentar."
+                f"dashAI could not find the resource ({detalle}). Verify the id with "
+                "the matching listing tool before retrying."
             ) from e
         if codigo == 409:
-            raise DashAIError(f"Conflicto: {detalle}") from e
+            raise DashAIError(f"Conflict: {detalle}") from e
         if codigo == 422:
             raise DashAIError(
-                f"dashAI rechazó los parámetros: {detalle}\n"
-                "Los nombres de modelos, métricas y tareas deben venir tal cual los "
-                "devuelve dashai_list_components — son sensibles a mayúsculas."
+                f"dashAI rejected the parameters: {detalle}\n"
+                "Model, metric and task names must be passed exactly as "
+                "dashai_list_components returns them — they are case-sensitive."
             ) from e
-        raise DashAIError(f"dashAI respondió {codigo}: {detalle}") from e
+        raise DashAIError(f"dashAI responded {codigo}: {detalle}") from e
 
 
 async def get(path: str, **kwargs: Any) -> Any:

@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "dashai-mcp"
 version = "0.2.0"
-description = "Servidor MCP para dashAI — entrena, evalúa y consulta modelos de ML desde un agente"
+description = "MCP server for dashAI — train, evaluate and query ML models from an agent"
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"

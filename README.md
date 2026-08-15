@@ -1,34 +1,33 @@
 # dashai-mcp
 
-Servidor [MCP](https://modelcontextprotocol.io) para **[dashAI](https://github.com/DashAISoftware/DashAI)**, el workbench de Machine Learning open source de la Universidad de Chile (FCFM), desarrollado por estudiantes del DCC UChile y la UTFSM, con CENIA e IMFD.
+An [MCP](https://modelcontextprotocol.io) server for **[dashAI](https://github.com/DashAISoftware/DashAI)**, the open source Machine Learning workbench led by the University of Chile (FCFM), built by students of DCC UChile and UTFSM, with CENIA and IMFD.
 
-Le da a un agente la misma superficie que dashAI le da a una persona por su interfaz gráfica: mirar datasets, ver qué modelos hay disponibles, entrenar, seguir el trabajo en cola y leer las métricas.
+It gives an agent the same surface dashAI gives a person through its GUI: look at datasets, see which models are available, train, follow queued work, and read the metrics.
 
 ```
-"Entrena un random forest sobre el dataset 3 prediciendo 'species' y dime el F1"
+"Train a random forest on dataset 3 predicting 'species' and tell me the F1"
 ```
 
-## Estado
+## Status
 
-**v0.2.0 — verificado contra dashAI 0.9.7.post1 corriendo.** 25 tests deterministas
-en verde y un entrenamiento real completo de punta a punta: `dashai_train_model`
-→ `dashai_job_status` → `dashai_get_run` con métricas.
+**v0.2.0 — verified against a running dashAI 0.9.7.post1.** 25 deterministic tests
+green, plus one complete end-to-end training run: `dashai_train_model` →
+`dashai_job_status` → `dashai_get_run` with metrics.
 
-La verificación contra una instancia viva encontró **cuatro errores que los tests
-con dobles no podían ver**, todos por diferencias entre la documentación de dashAI
-y su comportamiento real. Están descritos abajo y cada uno tiene su test de
-regresión.
+Verifying against a live instance surfaced **four bugs that tests with doubles
+could not see**, all of them gaps between dashAI's documentation and its actual
+behaviour. They are described below and each one has its own regression test.
 
-## Instalación
+## Install
 
 ```bash
 uv pip install git+https://github.com/Maarmapa/dashai-mcp
-# o: pip install git+https://github.com/Maarmapa/dashai-mcp
+# or: pip install git+https://github.com/Maarmapa/dashai-mcp
 ```
 
-Todavía no está publicado en PyPI.
+Not published on PyPI yet.
 
-En la configuración de tu cliente MCP:
+In your MCP client configuration:
 
 ```json
 {
@@ -40,98 +39,98 @@ En la configuración de tu cliente MCP:
 }
 ```
 
-dashAI tiene que estar corriendo aparte (`dashai`, o la app de escritorio). Por defecto se busca en `http://localhost:8000`.
+dashAI has to be running separately (`dashai`, or the desktop app). It is looked up at `http://localhost:8000` by default.
 
-## Herramientas
+## Tools
 
-| Herramienta | Qué hace |
+| Tool | What it does |
 |---|---|
-| `dashai_server_info` | ¿Está dashAI arriba? Cuántos datasets y corridas hay |
-| `dashai_list_datasets` | Lista los datasets cargados |
-| `dashai_describe_dataset` | Columnas, tipos y muestra — todo en una llamada |
-| `dashai_list_components` | Modelos, métricas, tareas y optimizadores disponibles |
-| `dashai_train_model` | **Entrena.** Encola y devuelve `job_id` + `run_id` |
-| `dashai_job_status` | Avance de un job: `not_started` / `started` / `finished` / `error` |
-| `dashai_list_runs` | Corridas registradas, para comparar modelos |
-| `dashai_get_run` | Configuración y métricas de una corrida |
-| `dashai_predict` | Predice con el modelo de una corrida terminada |
+| `dashai_server_info` | Is dashAI up? How many datasets and runs are there |
+| `dashai_list_datasets` | Lists the loaded datasets |
+| `dashai_describe_dataset` | Columns, types and a sample — all in one call |
+| `dashai_list_components` | Available models, metrics, tasks and optimizers |
+| `dashai_train_model` | **Trains.** Enqueues and returns `job_id` + `run_id` |
+| `dashai_job_status` | Job progress: `not_started` / `started` / `finished` / `error` |
+| `dashai_list_runs` | Recorded runs, for comparing models |
+| `dashai_get_run` | Configuration and metrics of a run |
+| `dashai_predict` | Predicts using the model of a finished run |
 
-## Cuatro cosas que la documentación de dashAI dice mal
+## Four things dashAI's documentation gets wrong
 
-Descubiertas corriéndolo contra una instancia real. Si escribes un cliente de esta
-API, te van a morder:
+Found by running against a real instance. If you are writing a client for this
+API, these will bite you:
 
-| Lo que dice la doc | Lo que hace el código |
+| What the docs say | What the code does |
 |---|---|
-| `?select_types=["Model","Metric"]` | Deben ser **parámetros repetidos**: `?select_types=Model&select_types=Metric`. Con el array JSON responde 422. |
-| `POST /job/` con cuerpo JSON | Es **form data**, con `kwargs` serializado como string JSON. Su propio `openapi.json` no declara `requestBody` para esa ruta, porque el endpoint parsea `request` a mano. |
-| `splits` como objeto | Viaja como **string JSON**: el esquema Pydantic lo declara `str`. |
-| `optimize(model_class, search_space, X, y, n_trials)` | La firma real es `optimize(model, input_dataset, output_dataset, parameters, metric)`, y `model` es una **instancia**, no una clase. |
+| `?select_types=["Model","Metric"]` | Must be **repeated parameters**: `?select_types=Model&select_types=Metric`. The JSON array returns 422. |
+| `POST /job/` with a JSON body | It is **form data**, with `kwargs` serialized as a JSON string. Its own `openapi.json` declares no `requestBody` for that route, because the endpoint parses `request` by hand. |
+| `splits` as an object | It travels as a **JSON string**: the Pydantic schema declares it `str`. |
+| `optimize(model_class, search_space, X, y, n_trials)` | The real signature is `optimize(model, input_dataset, output_dataset, parameters, metric)`, and `model` is an **instance**, not a class. |
 
-Además, el registro de componentes tiene **13 tipos**, no los cuatro que sugiere
-la documentación: `Task`, `GenerativeTask`, `Model`, `GenerativeModel`,
-`DataLoader`, `DatasetSource`, `Metric`, `Optimizer`, `Job`, `LocalExplainer`,
+The component registry also has **13 types**, not the four the documentation
+suggests: `Task`, `GenerativeTask`, `Model`, `GenerativeModel`, `DataLoader`,
+`DatasetSource`, `Metric`, `Optimizer`, `Job`, `LocalExplainer`,
 `GlobalExplainer`, `Explorer`, `Converter`.
 
-Y `GET /run/{id}` devuelve `split_indexes` con la lista completa de índices: en un
-dataset de 10.000 filas son **59 KB, el 99% de la respuesta**. Este servidor la
-reemplaza por el conteo por partición, dejando la respuesta en ~1 KB.
+And `GET /run/{id}` returns `split_indexes` with the full list of indices: on a
+10,000-row dataset that is **59 KB, 99% of the response**. This server replaces
+it with the per-split counts, bringing the response down to ~1 KB.
 
-## Tres decisiones de diseño
+## Three design decisions
 
-### 1. Nueve herramientas, no 142
+### 1. Nine tools, not 142
 
-dashAI expone 142 endpoints REST. Generar una herramienta por endpoint es mecánico y es un error: un modelo con 140 herramientas gasta contexto leyendo el catálogo y elige peor. Estas nueve cubren el recorrido real de trabajo.
+dashAI exposes 142 REST endpoints. Generating one tool per endpoint is mechanical and it is a mistake: a model with 140 tools burns context reading the catalogue and chooses worse. These nine cover the actual working path.
 
-### 2. `dashai_train_model` colapsa tres llamadas
+### 2. `dashai_train_model` collapses three calls
 
-En la API cruda, entrenar es una secuencia encadenada:
-
-```
-POST /model-session/   → crea el experimento
-POST /run/             → crea la corrida
-POST /job/             → encola el ModelJob
-```
-
-Con campos obligatorios que la interfaz gráfica rellena sola y que no están documentados — `plot_history_path`, `plot_slice_path`, `plot_contour_path`, `plot_importance_path`. Además, **`splits` viaja como string JSON, no como objeto**, aunque la documentación de dashAI lo muestre como objeto: el esquema Pydantic del backend lo declara `str`. Ese tipo de detalle es exactamente lo que hace fallar a un agente contra la API cruda.
-
-Acá es una sola llamada, y **no bloquea**: entrenar puede tomar horas, así que devuelve el `job_id` de inmediato y el avance se consulta con `dashai_job_status`.
-
-### 3. Ninguna herramienta borra nada
-
-La API de dashAI **no tiene autenticación** — se revisó endpoint por endpoint. Es coherente con algo local-first, pero significa que no hay ninguna barrera entre una frase mal interpretada y un `DELETE /dataset/{id}` irreversible. Borrar se hace desde la interfaz, mirando lo que se borra.
-
-Por la misma razón, el servidor **se niega a apuntar a un host que no sea local**:
+In the raw API, training is a chained sequence:
 
 ```
-DASHAI_BASE_URL apunta a 'ml.ejemplo.com', que no es local, y la API de dashAI
-no tiene autenticación: exponerla a la red deja el backend abierto a cualquiera
-que lo alcance.
+POST /model-session/   → creates the experiment
+POST /run/             → creates the run
+POST /job/             → enqueues the ModelJob
 ```
 
-Se puede desactivar a propósito con `DASHAI_ALLOW_REMOTE=1`, si el destino está protegido por otra vía.
+With required fields the GUI fills in on its own and that are undocumented — `plot_history_path`, `plot_slice_path`, `plot_contour_path`, `plot_importance_path`. On top of that, **`splits` travels as a JSON string, not an object**, even though dashAI's documentation shows it as an object: the backend's Pydantic schema declares it `str`. That kind of detail is exactly what makes an agent fail against the raw API.
 
-## Configuración
+Here it is a single call, and it **does not block**: training can take hours, so it returns the `job_id` immediately and progress is polled with `dashai_job_status`.
 
-| Variable | Default | Para qué |
+### 3. No tool deletes anything
+
+dashAI's API has **no authentication** — checked endpoint by endpoint. That is coherent for something local-first, but it means there is no barrier between a misread sentence and an irreversible `DELETE /dataset/{id}`. Deleting is done from the GUI, looking at what is being deleted.
+
+For the same reason, the server **refuses to point at a non-local host**:
+
+```
+DASHAI_BASE_URL points to 'ml.example.com', which is not local, and dashAI's API
+has no authentication: exposing it to the network leaves the backend open to
+anyone who can reach it.
+```
+
+This can be disabled on purpose with `DASHAI_ALLOW_REMOTE=1`, if the target is protected some other way.
+
+## Configuration
+
+| Variable | Default | What for |
 |---|---|---|
-| `DASHAI_BASE_URL` | `http://localhost:8000` | Dónde está el backend |
-| `DASHAI_ALLOW_REMOTE` | *(no)* | Permitir un host no local (ver arriba) |
-| `DASHAI_TIMEOUT` | `30` | Segundos de espera por petición |
+| `DASHAI_BASE_URL` | `http://localhost:8000` | Where the backend is |
+| `DASHAI_ALLOW_REMOTE` | *(no)* | Allow a non-local host (see above) |
+| `DASHAI_TIMEOUT` | `30` | Seconds to wait per request |
 
-## Desarrollo
+## Development
 
 ```bash
 python -m venv .venv && .venv/bin/pip install -e ".[dev]"
 .venv/bin/python -m pytest tests/ -q
 ```
 
-Los tests simulan las respuestas HTTP con `respx`: **no necesitan una instancia de dashAI ni credenciales**. Prueban el contrato — qué llamadas se hacen, en qué orden, con qué cuerpo, y qué se le dice al agente cuando algo falla.
+The tests stub the HTTP responses with `respx`: **they need neither a dashAI instance nor credentials**. They test the contract — which calls are made, in what order, with what body, and what the agent is told when something fails.
 
-## Nota sobre el SDK
+## A note on the SDK
 
-Requiere el SDK de Python de MCP **2.x**. La versión 2.0 eliminó `mcp.server.fastmcp`; ahora es `mcp.server.mcpserver.MCPServer` y las anotaciones son objetos `ToolAnnotations` en vez de diccionarios. La mayoría de los tutoriales todavía muestran la API 1.x.
+Requires the MCP Python SDK **2.x**. Version 2.0 removed `mcp.server.fastmcp`; it is now `mcp.server.mcpserver.MCPServer`, and annotations are `ToolAnnotations` objects instead of dictionaries. Most tutorials still show the 1.x API.
 
-## Licencia
+## License
 
-MIT, igual que dashAI. Este es un servidor de terceros, **no oficial**: no está afiliado al proyecto dashAI ni a las instituciones que lo desarrollan.
+MIT, same as dashAI. This is a third-party, **unofficial** server: it is not affiliated with the dashAI project or the institutions that develop it.
