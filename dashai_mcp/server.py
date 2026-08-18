@@ -3,9 +3,9 @@
 
 dashAI exposes 142 REST endpoints. This server does NOT wrap them all: wrapping
 an API endpoint by endpoint produces a catalogue the model cannot navigate and
-in which it chooses worse. There are nine tools here, covering the actual
+in which it chooses worse. There are ten tools here, covering the actual
 working path — look at data, see which models exist, train, follow the job,
-read results, predict.
+read results, predict, read prediction counts (never rows).
 
 The centrepiece is `dashai_train_model`. In the raw API, training is THREE
 chained calls (model-session → run → job) with fields the GUI fills in on its
@@ -51,6 +51,28 @@ COMPONENT_TYPES = (
     "GlobalExplainer", "Explorer", "Converter",
 )
 
+CLASSIFICATION_TASKS = frozenset(
+    {
+        "TabularClassificationTask",
+        "TextClassificationTask",
+        "ImageClassificationTask",
+    }
+)
+
+# Keys that would dump a prediction column into the agent. Stripped if a
+# future dashAI version starts returning them on GET /predict/.
+_PREDICTION_ROW_KEYS = frozenset(
+    {
+        "rows",
+        "sample",
+        "predictions",
+        "labels",
+        "values",
+        "y_pred",
+        "records",
+    }
+)
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Shared helpers
@@ -87,6 +109,62 @@ def _summarize_dataset(d: Dict[str, Any]) -> Dict[str, Any]:
         "created": d.get("created"),
         "status": d.get("status"),
     }
+
+
+def _splits_for_session(params: "TrainModel") -> str:
+    """JSON string dashAI expects for model-session.splits.
+
+    `prepare_for_model_session` defaults ``shuffle`` and ``stratify`` to
+    **False**. On a class-sorted seed (``cifar10-subset`` is 100 frog then
+    100 truck) a 70/15/15 cut without shuffle puts val and test in a single
+    class. Accuracy still moves; sklearn's MCC is defined as 0.
+    """
+    payload: Dict[str, Any] = dict(params.splits)
+    payload.setdefault("shuffle", True)
+    if params.task_name in CLASSIFICATION_TASKS:
+        payload.setdefault("stratify", True)
+    return json.dumps(payload)
+
+
+def _metric_warnings(run: Dict[str, Any]) -> List[str]:
+    """Flag metric combinations that look like a single-class split, not skill."""
+    warnings: List[str] = []
+    for split in ("validation_metrics", "test_metrics"):
+        metrics = run.get(split) or {}
+        if not isinstance(metrics, dict):
+            continue
+        mcc = metrics.get("MatthewsCorrCoef")
+        acc = metrics.get("Accuracy")
+        if mcc is None or acc is None:
+            continue
+        try:
+            mcc_f = float(mcc)
+            acc_f = float(acc)
+        except (TypeError, ValueError):
+            continue
+        if abs(mcc_f) < 1e-12 and acc_f > 0.55:
+            warnings.append(
+                f"{split}: MatthewsCorrCoef is 0 while Accuracy is {acc_f:.3f}. "
+                "On n_classes=1 in that split, sklearn defines MCC as 0 and "
+                "BalancedAccuracy collapses to Accuracy. dashAI's default "
+                "shuffle/stratify are False — a sequential cut on a "
+                "class-sorted dataset does this. Not a model result. "
+                "Retrain; this server now sends shuffle=true and "
+                "stratify=true on classification tasks."
+            )
+    return warnings
+
+
+def count_labels(values: List[Any]) -> Dict[str, Any]:
+    """Aggregate a label column. The input list is not returned."""
+    counts: Dict[str, int] = {}
+    n = 0
+    for raw in values:
+        value = raw.item() if hasattr(raw, "item") else raw
+        key = str(value)
+        counts[key] = counts.get(key, 0) + 1
+        n += 1
+    return {"n": n, "n_classes": len(counts), "class_counts": counts}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -232,6 +310,12 @@ class Predict(BaseModel):
         ),
         ge=1,
     )
+
+
+class GetPrediction(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    prediction_id: int = Field(..., description="Id returned by dashai_predict", ge=1)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -438,7 +522,7 @@ async def dashai_train_model(params: TrainModel) -> str:
                 "train_metrics": params.metrics,
                 "validation_metrics": params.metrics,
                 "test_metrics": params.metrics,
-                "splits": json.dumps(params.splits),
+                "splits": _splits_for_session(params),
             },
         )
         session_id = session["id"]
@@ -600,6 +684,10 @@ async def dashai_get_run(params: GetRun) -> str:
     if isinstance(run.get("status"), int):
         run["status_name"] = RUN_STATUS.get(run["status"], "UNKNOWN")
 
+    warnings = _metric_warnings(run)
+    if warnings:
+        run["metric_warnings"] = warnings
+
     return _json(run)
 
 
@@ -692,10 +780,185 @@ async def dashai_predict(params: Predict) -> str:
             "status": "enqueued",
             "next_step": (
                 f"Poll progress with dashai_job_status(job_id='{job_id}'). "
-                f"The prediction record is id={prediction_id}."
+                f"When it finishes, class counts are in "
+                f"dashai_get_prediction(prediction_id={prediction_id})."
             ),
         }
     )
+
+
+@mcp.tool(
+    name="dashai_get_prediction",
+    annotations=ToolAnnotations(
+        title="Prediction class counts",
+        read_only_hint=True,
+        destructive_hint=False,
+        idempotent_hint=True,
+        open_world_hint=True,
+    ),
+)
+async def dashai_get_prediction(params: GetPrediction) -> str:
+    """Returns class counts for a finished prediction — never the rows.
+
+    dashAI stores predictions as an Arrow dataset on disk and GET /predict/
+    only returns the SQL row (id, status, paths). This tool reads that row
+    and, when the job is finished, aggregates the output column. The label
+    list never leaves the function.
+
+    Args:
+        params (GetPrediction): contains prediction_id from dashai_predict.
+
+    Returns:
+        str: JSON {prediction_id, run_id, dataset_id, status, finished,
+        n, n_classes, class_counts}. Paths and row lists are stripped.
+    """
+    try:
+        raw = await client.get("predict/", params={"prediction_id": params.prediction_id})
+    except DashAIError as e:
+        return _error(e)
+
+    record = _first_prediction_record(raw, params.prediction_id)
+    if record is None:
+        return (
+            f"Error: dashAI has no prediction {params.prediction_id}. "
+            "Use the id returned by dashai_predict."
+        )
+
+    status = record.get("status")
+    status_name = _prediction_status_name(status)
+    finished = status_name == "FINISHED" or status == 3
+    out: Dict[str, Any] = {
+        "prediction_id": record.get("id", params.prediction_id),
+        "run_id": record.get("run_id"),
+        "dataset_id": record.get("dataset_id"),
+        "status": status,
+        "status_name": status_name,
+        "finished": finished,
+        "failed": status_name == "ERROR" or status == 4,
+        "n": None,
+        "n_classes": None,
+        "class_counts": None,
+    }
+
+    if not finished:
+        out["next_step"] = (
+            "The prediction job has not finished. Poll dashai_job_status "
+            "and retry this tool."
+        )
+        return _json(out)
+
+    output_col = await _output_column_for_run(record.get("run_id"))
+    values = _load_output_column(record.get("results_path"), output_col)
+    if values is None:
+        out["note"] = (
+            "The prediction finished but the Arrow dataset could not be "
+            "aggregated (pyarrow/datasets not importable, or no output "
+            "column). dashAI has no counts endpoint. Rows were not loaded "
+            "into this response."
+        )
+        return _json(out)
+
+    counts = count_labels(values)
+    out.update(counts)
+    return _json(out)
+
+
+def _first_prediction_record(raw: Any, prediction_id: int) -> Optional[Dict[str, Any]]:
+    if isinstance(raw, dict):
+        candidates = [raw]
+    elif isinstance(raw, list):
+        candidates = [r for r in raw if isinstance(r, dict)]
+    else:
+        return None
+    for row in candidates:
+        if row.get("id") == prediction_id:
+            return {k: v for k, v in row.items() if k not in _PREDICTION_ROW_KEYS}
+    return candidates[0] if len(candidates) == 1 else None
+
+
+def _prediction_status_name(status: Any) -> str:
+    if isinstance(status, int):
+        return RUN_STATUS.get(status, "UNKNOWN")
+    if isinstance(status, str):
+        return status.split(".")[-1].upper()
+    return "UNKNOWN"
+
+
+async def _output_column_for_run(run_id: Any) -> Optional[str]:
+    if not run_id:
+        return None
+    try:
+        run = await client.get(f"run/{run_id}")
+    except DashAIError:
+        return None
+    session_id = run.get("model_session_id") if isinstance(run, dict) else None
+    if not session_id:
+        return None
+    try:
+        session = await client.get(f"model-session/{session_id}")
+    except DashAIError:
+        return None
+    cols = session.get("output_columns") if isinstance(session, dict) else None
+    if isinstance(cols, list) and cols:
+        return str(cols[0])
+    return None
+
+
+def _load_output_column(results_path: Any, output_col: Optional[str]) -> Optional[List[Any]]:
+    """Load only the output column. Callers must pass it through count_labels."""
+    if not results_path or not isinstance(results_path, str):
+        return None
+    from pathlib import Path
+
+    root = Path(results_path)
+    dataset_dir = root / "dataset" if (root / "dataset").is_dir() else root
+    if not dataset_dir.exists():
+        return None
+
+    try:
+        from datasets import load_from_disk
+
+        ds = load_from_disk(str(dataset_dir))
+        col = _pick_output_column(list(ds.column_names), output_col)
+        if col is None:
+            return None
+        return list(ds[col])
+    except Exception:
+        pass
+
+    arrow = dataset_dir / "data.arrow"
+    if arrow.is_file():
+        try:
+            import pyarrow as pa
+
+            with pa.memory_map(str(arrow), "r") as src:
+                table = pa.ipc.open_file(src).read_all()
+            col = _pick_output_column(list(table.column_names), output_col)
+            if col is None:
+                return None
+            return table[col].to_pylist()
+        except Exception:
+            pass
+
+    try:
+        import pyarrow.dataset as pads
+
+        table = pads.dataset(str(dataset_dir)).to_table()
+        col = _pick_output_column(list(table.column_names), output_col)
+        if col is None:
+            return None
+        return table[col].to_pylist()
+    except Exception:
+        return None
+
+
+def _pick_output_column(names: List[str], preferred: Optional[str]) -> Optional[str]:
+    if preferred and preferred in names:
+        return preferred
+    for name in names:
+        if name != "image":
+            return name
+    return None
 
 
 def main() -> None:

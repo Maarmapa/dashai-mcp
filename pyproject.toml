@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "dashai-mcp"
-version = "0.2.1"
+version = "0.2.2"
 description = "MCP server for dashAI — train, evaluate and query ML models from an agent"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -29,6 +29,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "respx>=0.21"]
+counts = ["pyarrow>=15"]
 
 [project.scripts]
 dashai-mcp = "dashai_mcp.server:main"

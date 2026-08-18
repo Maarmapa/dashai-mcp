@@ -14,7 +14,7 @@ It gives an agent the same surface dashAI gives a person through its GUI: look a
 
 ## Status
 
-**v0.2.1 — verified against a running dashAI 0.9.7.post1.** Deterministic tests
+**v0.2.2 — verified against a running dashAI 0.9.7.post1.** Deterministic tests
 (including the predict two-step path) plus live runs: `dashai_train_model` →
 `dashai_job_status` → `dashai_get_run` with metrics, and `dashai_predict` →
 `dashai_job_status` finished.
@@ -43,10 +43,12 @@ Public seed: 200 images, frog vs truck (100/100). `LeNet5ImageClassifier`, CPU, 
 | 10 epochs | 10 | 0.879 | **0.467** | 0.633 | 0.000 |
 | 40 epochs | 40 | 0.950 | 0.733 | 0.867 | 0.000 |
 
-The image *path* works (job finished, metrics came back). The *model* does not: 10 epochs is worse than chance on val; 40 epochs memorizes train and still reports **MCC 0** on val and test while Accuracy moves. n=30 is too small to brag, and a 0 MCC next to 0.87 Accuracy is not a result — it is a reason not to publish a leaderboard line. Do not quote the 0.867.
+The image *path* works (job finished, metrics came back). The *0.867 is not a result*: dashAI defaulted `shuffle=False`, so val/test were 30 trucks and zero frogs. MCC 0 is sklearn on a one-class split, not a broken metric function. Do not quote the 0.867. Retrain with the shuffle/stratify this server now sends.
 
 Verifying against a live instance surfaced **gaps between dashAI's documentation
-and its actual behaviour**. Each one has its own regression test. A fifth —
+and its actual behaviour**. Each one has its own regression test. A sixth —
+sequential splits with `shuffle=False` — only showed up live because MCC
+came back 0 next to a moving Accuracy.
 `dashai_predict` sending `run_id` to `PredictJob` — only showed up live
 (`KeyError: 'prediction_id'`) because there was no predict test.
 
@@ -84,8 +86,9 @@ dashAI has to be running separately (`dashai`, or the desktop app). It is looked
 | `dashai_list_runs` | Recorded runs, for comparing models |
 | `dashai_get_run` | Configuration and metrics of a run |
 | `dashai_predict` | Predicts using the model of a finished run |
+| `dashai_get_prediction` | Class counts of a finished prediction — **never the rows** |
 
-## Five things dashAI's documentation gets wrong
+## Six things dashAI's documentation (or defaults) get wrong
 
 Found by running against a real instance. If you are writing a client for this
 API, these will bite you:
@@ -97,6 +100,7 @@ API, these will bite you:
 | `splits` as an object | It travels as a **JSON string**: the Pydantic schema declares it `str`. |
 | `optimize(model_class, search_space, X, y, n_trials)` | The real signature is `optimize(model, input_dataset, output_dataset, parameters, metric)`, and `model` is an **instance**, not a class. |
 | Predict by `run_id` on the job | `PredictJob.run` requires `kwargs["prediction_id"]`. The GUI first `POST /predict/` (`{run_id, dataset_id}`) and only then enqueues. Sending `run_id` to the job raises `KeyError: 'prediction_id'`. |
+| Split `shuffle` / `stratify` | `prepare_for_model_session` defaults both to **False**. On a class-sorted seed (`cifar10-subset` is 100 frog then 100 truck) a 70/15/15 cut puts val and test in **one class**. Accuracy still moves; sklearn's MCC is defined as 0. This server sends `shuffle=true` and, on classification tasks, `stratify=true`. |
 
 The component registry also has **13 types**, not the four the documentation
 suggests: `Task`, `GenerativeTask`, `Model`, `GenerativeModel`, `DataLoader`,
@@ -109,9 +113,9 @@ it with the per-split counts, bringing the response down to ~1 KB.
 
 ## Three design decisions
 
-### 1. Nine tools, not 142
+### 1. Ten tools, not 142
 
-dashAI exposes 142 REST endpoints. Generating one tool per endpoint is mechanical and it is a mistake: a model with 140 tools burns context reading the catalogue and chooses worse. These nine cover the actual working path.
+dashAI exposes 142 REST endpoints. Generating one tool per endpoint is mechanical and it is a mistake: a model with 140 tools burns context reading the catalogue and chooses worse. These ten cover the actual working path.
 
 ### 2. `dashai_train_model` collapses three calls
 
@@ -150,6 +154,8 @@ This can be disabled on purpose with `DASHAI_ALLOW_REMOTE=1`, if the target is p
 | `DASHAI_BASE_URL` | `http://localhost:8000` | Where the backend is |
 | `DASHAI_ALLOW_REMOTE` | *(no)* | Allow a non-local host (see above) |
 | `DASHAI_TIMEOUT` | `30` | Seconds to wait per request |
+
+`dashai_get_prediction` needs `pyarrow` in the MCP process to turn the Arrow file into class counts (`pip install 'dashai-mcp[counts]'`, or install the MCP into the same env as dashAI). Without it the tool still returns status and refuses to dump rows.
 
 ## Development
 

@@ -14,13 +14,18 @@ import respx
 from dashai_mcp import client, config
 from dashai_mcp.server import (
     DescribeDataset,
+    GetPrediction,
     GetRun,
     JobStatus,
     ListComponents,
     NoArgs,
     Predict,
     TrainModel,
+    _metric_warnings,
+    _splits_for_session,
+    count_labels,
     dashai_describe_dataset,
+    dashai_get_prediction,
     dashai_get_run,
     dashai_job_status,
     dashai_list_components,
@@ -155,7 +160,10 @@ async def test_training_chains_the_three_calls():
     # splits travels as a JSON STRING: dashAI declares it str, even though its docs draw an object.
     session_body = json.loads(session.calls[0].request.content)
     assert isinstance(session_body["splits"], str)
-    assert json.loads(session_body["splits"])["train"] == 0.7
+    sent_splits = json.loads(session_body["splits"])
+    assert sent_splits["train"] == 0.7
+    assert sent_splits["shuffle"] is True
+    assert sent_splits["stratify"] is True
     # The metrics apply to all three splits.
     assert session_body["train_metrics"] == session_body["test_metrics"] == ["Accuracy", "F1"]
 
@@ -430,3 +438,134 @@ async def test_predict_refuses_an_unfinished_run():
     assert "FINISHED" in out
     assert not created.called
     assert not job_route.called
+
+
+# --- Prediction counts (never rows) + MCC trap --------------------------------
+
+
+def test_count_labels_does_not_echo_the_column():
+    summary = count_labels(["frog", "truck", "frog", "frog"])
+    assert summary == {"n": 4, "n_classes": 2, "class_counts": {"frog": 3, "truck": 1}}
+    dumped = json.dumps(summary)
+    assert "['frog'" not in dumped
+    assert "predictions" not in dumped
+
+
+def test_classification_splits_enable_shuffle_and_stratify():
+    params = TrainModel(
+        dataset_id=1,
+        task_name="ImageClassificationTask",
+        model_name="LeNet5ImageClassifier",
+        input_columns=["image"],
+        output_columns=["label"],
+        metrics=["Accuracy"],
+        goal_metric="Accuracy",
+    )
+    sent = json.loads(_splits_for_session(params))
+    assert sent["shuffle"] is True
+    assert sent["stratify"] is True
+
+
+def test_regression_splits_do_not_pretend_to_stratify():
+    params = TrainModel(
+        dataset_id=1,
+        task_name="RegressionTask",
+        model_name="RandomForestRegression",
+        input_columns=["x"],
+        output_columns=["y"],
+        metrics=["RMSE"],
+        goal_metric="RMSE",
+    )
+    sent = json.loads(_splits_for_session(params))
+    assert sent["shuffle"] is True
+    assert "stratify" not in sent
+
+
+def test_mcc_zero_with_high_accuracy_is_flagged():
+    """Live cifar10-subset: test Acc 0.867, MCC 0 — single-class split, not skill."""
+    warnings = _metric_warnings(
+        {
+            "validation_metrics": {"Accuracy": 0.733, "MatthewsCorrCoef": 0.0},
+            "test_metrics": {"Accuracy": 0.867, "MatthewsCorrCoef": 0.0},
+        }
+    )
+    assert len(warnings) == 2
+    assert "single" in warnings[0] or "n_classes=1" in warnings[0]
+    assert "shuffle" in warnings[0]
+
+
+def test_healthy_mcc_is_not_flagged():
+    assert _metric_warnings(
+        {"test_metrics": {"Accuracy": 0.845, "MatthewsCorrCoef": 0.591}}
+    ) == []
+
+
+@respx.mock
+async def test_get_run_surfaces_the_mcc_split_trap():
+    respx.get(f"{API}/run/5").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "id": 5,
+                "status": 3,
+                "test_metrics": {"Accuracy": 0.8667, "MatthewsCorrCoef": 0.0},
+                "validation_metrics": {"Accuracy": 0.7333, "MatthewsCorrCoef": 0.0},
+            },
+        )
+    )
+    data = json.loads(await dashai_get_run(GetRun(run_id=5)))
+    assert data["metric_warnings"]
+    assert "MatthewsCorrCoef" in data["metric_warnings"][0]
+
+
+@respx.mock
+async def test_get_prediction_returns_counts_never_rows():
+    respx.get(f"{API}/predict/").mock(
+        return_value=httpx.Response(
+            200,
+            json=[
+                {
+                    "id": 4,
+                    "run_id": 2,
+                    "dataset_id": 2,
+                    "status": 3,
+                    "results_path": "/secret/home/predictions/abc",
+                    "rows": [["alice@x", "Placed"]],
+                    "predictions": ["Placed", "Not Placed"],
+                }
+            ],
+        )
+    )
+    respx.get(f"{API}/run/2").mock(
+        return_value=httpx.Response(200, json={"id": 2, "model_session_id": 2})
+    )
+    respx.get(f"{API}/model-session/2").mock(
+        return_value=httpx.Response(200, json={"id": 2, "output_columns": ["placement_status"]})
+    )
+
+    out = await dashai_get_prediction(GetPrediction(prediction_id=4))
+    data = json.loads(out)
+    assert data["prediction_id"] == 4
+    assert data["finished"] is True
+    assert data["run_id"] == 2
+    assert "results_path" not in data
+    assert "rows" not in data
+    assert "predictions" not in data
+    assert "/secret/" not in out
+    assert "alice@" not in out
+    # Arrow load will fail in the test env — counts stay null, rows still must not leak.
+    assert data["class_counts"] is None
+
+
+@respx.mock
+async def test_get_prediction_unfinished_does_not_read_disk():
+    respx.get(f"{API}/predict/").mock(
+        return_value=httpx.Response(
+            200,
+            json=[{"id": 9, "run_id": 1, "dataset_id": 2, "status": 2}],
+        )
+    )
+    out = json.loads(await dashai_get_prediction(GetPrediction(prediction_id=9)))
+    assert out["finished"] is False
+    assert out["class_counts"] is None
+    assert "dashai_job_status" in out["next_step"]
