@@ -31,6 +31,17 @@ Public dashAI seed only. Target `placement_status` (~83% majority).
 
 The dummy *wins F1 and is close on Accuracy* by always answering the majority class. The forest is the one that actually separates classes. If a client reports only F1 here, it is lying.
 
+### Live image run (seed `cifar10-subset`)
+
+Public seed: 200 images, frog vs truck (100/100). `LeNet5ImageClassifier`, CPU, 32×32. Split 70/15/15 → **test n=30**. Chance is 0.5.
+
+| run | epochs | train Acc | val Acc | test Acc | test MCC |
+|---|---:|---:|---:|---:|---:|
+| 10 epochs | 10 | 0.879 | **0.467** | 0.633 | 0.000 |
+| 40 epochs | 40 | 0.950 | 0.733 | 0.867 | 0.000 |
+
+The image *path* works (job finished, metrics came back). The *model* does not: 10 epochs is worse than chance on val; 40 epochs memorizes train and still reports **MCC 0** on val and test while Accuracy moves. n=30 is too small to brag, and a 0 MCC next to 0.87 Accuracy is not a result — it is a reason not to publish a leaderboard line. Do not quote the 0.867.
+
 Verifying against a live instance surfaced **gaps between dashAI's documentation
 and its actual behaviour**. Each one has its own regression test. A fifth —
 `dashai_predict` sending `run_id` to `PredictJob` — only showed up live
