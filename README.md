@@ -2,6 +2,10 @@
 
 An [MCP](https://modelcontextprotocol.io) server for **[dashAI](https://github.com/DashAISoftware/DashAI)**, the open source Machine Learning workbench led by the University of Chile (FCFM), built by students of DCC UChile and UTFSM, with CENIA and IMFD.
 
+> **Unofficial and independent.** This is a third-party project. It is not
+> affiliated with, endorsed by, or maintained by the dashAI project or the
+> institutions that develop it.
+
 It gives an agent the same surface dashAI gives a person through its GUI: look at datasets, see which models are available, train, follow queued work, and read the metrics.
 
 ```
@@ -133,4 +137,4 @@ Requires the MCP Python SDK **2.x**. Version 2.0 removed `mcp.server.fastmcp`; i
 
 ## License
 
-MIT, same as dashAI. This is a third-party, **unofficial** server: it is not affiliated with the dashAI project or the institutions that develop it.
+MIT, same as dashAI. See the note at the top on affiliation.
