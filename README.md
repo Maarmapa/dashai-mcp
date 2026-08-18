@@ -27,9 +27,12 @@ Public dashAI seed only. Target `placement_status` (~83% majority).
 | model | test BalancedAccuracy | test MCC | test F1 | test Accuracy |
 |---|---:|---:|---:|---:|
 | `DummyClassifier(most_frequent)` | 0.500 | 0.000 | **0.906** | 0.827 |
-| `RandomForestClassifier` (`class_weight=balanced`, depth 8, 100 trees) | **0.851** | **0.591** | 0.900 | 0.845 |
+| `RandomForestClassifier` (`class_weight=balanced`, depth 8, 100 trees) | 0.851 | 0.591 | 0.900 | 0.845 |
+| `LogisticRegression` (`class_weight=balanced`, L2) | **0.873** | **0.624** | 0.905 | 0.853 |
 
-The dummy *wins F1 and is close on Accuracy* by always answering the majority class. The forest is the one that actually separates classes. If a client reports only F1 here, it is lying.
+The dummy *wins F1* by always answering the majority class. The linear model beats the forest on the metrics that actually measure separation. Each row is its own 70/15/15 draw (not the same test rows) — still enough to stop treating the forest as the default. If a client reports only F1 here, it is lying.
+
+`dashai_predict` on the finished forest run returned `prediction_id` and the job finished (`Saving predictions`). That scores the **same seed dataset the model was trained on**, not a held-out file — do not read it as a generalization check. The MCP does not yet return the prediction table; the proof is the finished job, not a dumped column of labels.
 
 ### Live image run (seed `cifar10-subset`)
 
