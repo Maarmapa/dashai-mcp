@@ -224,6 +224,14 @@ class Predict(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     run_id: int = Field(..., description="Id of an already finished run (status FINISHED)", ge=1)
+    dataset_id: Optional[int] = Field(
+        default=None,
+        description=(
+            "Dataset to predict on. If omitted, the run's training dataset is used. "
+            "Must have the same input columns as the model; pick it from dashai_list_datasets."
+        ),
+        ge=1,
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -602,28 +610,90 @@ async def dashai_predict(params: Predict) -> str:
     """Enqueues a prediction using the model of an already finished run.
 
     Like training, it is asynchronous: it returns a job_id and the result is
-    followed with dashai_job_status. The run must be in FINISHED status; if it
-    is not, dashAI rejects the request.
+    followed with dashai_job_status.
+
+    Collapses the two calls the GUI makes (read from
+    DatasetPredictionPanel + createPrediction + enqueuePredictionJob, not
+    from the docs):
+      1. POST /predict/           creates the Prediction row ({run_id, dataset_id})
+      2. POST /job/  PredictJob   enqueues with {prediction_id} — NOT run_id
+
+    Passing only run_id to the job raises KeyError 'prediction_id' inside
+    PredictJob.run. The Prediction row must exist first.
 
     Args:
         params (Predict): contains:
             - run_id (int): id of a finished run
+            - dataset_id (Optional[int]): dataset to score; defaults to the
+              run's training dataset (from its model session)
 
     Returns:
-        str: JSON {"job_id": str, "run_id": int, "status": "enqueued", "next_step": str}
+        str: JSON {"job_id", "run_id", "prediction_id", "dataset_id",
+        "status": "enqueued", "next_step"}
     """
     try:
-        job = await _enqueue_job("PredictJob", {"run_id": params.run_id})
+        run = await client.get(f"run/{params.run_id}")
     except DashAIError as e:
         return _error(e)
+
+    status = run.get("status")
+    if status != 3:  # FINISHED — DashAI/back/core/enums/status.py
+        name = RUN_STATUS.get(status, str(status))
+        return (
+            f"Error: run {params.run_id} is {name}, not FINISHED. "
+            "Wait until dashai_job_status reports finished, then retry."
+        )
+
+    dataset_id = params.dataset_id
+    if dataset_id is None:
+        session_id = run.get("model_session_id")
+        if not session_id:
+            return (
+                f"Error: run {params.run_id} has no model_session_id, so the "
+                "training dataset cannot be inferred. Pass dataset_id explicitly."
+            )
+        try:
+            session = await client.get(f"model-session/{session_id}")
+        except DashAIError as e:
+            return _error(e)
+        dataset_id = session.get("dataset_id")
+        if not dataset_id:
+            return (
+                f"Error: model session {session_id} has no dataset_id. "
+                "Pass dataset_id from dashai_list_datasets."
+            )
+
+    try:
+        # 1. Prediction row. JSON body, both fields required by the job even
+        # though PredictionCreationParams marks dataset_id optional: without
+        # it PredictJob raises "Either dataset_id or manual_input_data must
+        # be provided."
+        prediction = await client.post(
+            "predict/",
+            json={"run_id": params.run_id, "dataset_id": dataset_id},
+        )
+        prediction_id = prediction["id"]
+
+        # 2. Enqueue. Same form-data contract as ModelJob; kwargs carry
+        # prediction_id, matching enqueuePredictionJob in the GUI.
+        job = await _enqueue_job("PredictJob", {"prediction_id": prediction_id})
+    except DashAIError as e:
+        return _error(e)
+    except (KeyError, TypeError) as e:
+        return f"Error: dashAI responded with an unexpected shape ({e}). Check its version."
 
     job_id = job.get("id") if isinstance(job, dict) else job
     return _json(
         {
             "job_id": str(job_id),
             "run_id": params.run_id,
+            "prediction_id": prediction_id,
+            "dataset_id": dataset_id,
             "status": "enqueued",
-            "next_step": f"Follow progress with dashai_job_status(job_id='{job_id}').",
+            "next_step": (
+                f"Poll progress with dashai_job_status(job_id='{job_id}'). "
+                f"The prediction record is id={prediction_id}."
+            ),
         }
     )
 

@@ -18,11 +18,13 @@ from dashai_mcp.server import (
     JobStatus,
     ListComponents,
     NoArgs,
+    Predict,
     TrainModel,
     dashai_describe_dataset,
     dashai_get_run,
     dashai_job_status,
     dashai_list_components,
+    dashai_predict,
     dashai_server_info,
     dashai_train_model,
 )
@@ -331,3 +333,100 @@ async def test_queue_empty_is_unnested():
 
     data = json.loads(await dashai_server_info(NoArgs()))
     assert data["queue_empty"] is True
+
+
+# --- Prediction path ---------------------------------------------------------
+# Found live against dashAI 0.9.7.post1: enqueueing PredictJob with only
+# run_id raises KeyError 'prediction_id' inside PredictJob.run. The GUI
+# (DatasetPredictionPanel) does POST /predict/ then POST /job/ with that id.
+
+
+@respx.mock
+async def test_predict_creates_the_record_then_enqueues_with_prediction_id():
+    """The job kwargs must carry prediction_id, not run_id.
+
+    POST /predict/ body is JSON {run_id, dataset_id} (PredictionCreationParams).
+    POST /job/ is form data, same as ModelJob, kwargs={"prediction_id": <id>}.
+    """
+    from urllib.parse import parse_qs
+
+    respx.get(f"{API}/run/1").mock(
+        return_value=httpx.Response(200, json={"id": 1, "status": 3, "model_session_id": 7})
+    )
+    created = respx.post(f"{API}/predict/").mock(
+        return_value=httpx.Response(
+            200,
+            json={"id": 11, "run_id": 1, "dataset_id": 4, "status": 0},
+        )
+    )
+    job = respx.post(f"{API}/job/").mock(return_value=httpx.Response(201, json={"id": "pred-huey"}))
+
+    out = json.loads(await dashai_predict(Predict(run_id=1, dataset_id=4)))
+
+    assert created.called and job.called
+    assert created.calls[0].request.headers["content-type"].startswith("application/json")
+    assert json.loads(created.calls[0].request.content) == {"run_id": 1, "dataset_id": 4}
+
+    assert "application/x-www-form-urlencoded" in job.calls[0].request.headers["content-type"]
+    form = parse_qs(job.calls[0].request.content.decode())
+    assert form["job_type"] == ["PredictJob"]
+    kwargs = json.loads(form["kwargs"][0])
+    assert kwargs == {"prediction_id": 11}
+    assert "run_id" not in kwargs
+
+    assert out["job_id"] == "pred-huey"
+    assert out["prediction_id"] == 11
+    assert out["dataset_id"] == 4
+    assert out["run_id"] == 1
+    assert out["status"] == "enqueued"
+    assert "dashai_job_status" in out["next_step"]
+
+
+@respx.mock
+async def test_if_the_prediction_record_fails_nothing_is_enqueued():
+    respx.get(f"{API}/run/999").mock(
+        return_value=httpx.Response(200, json={"id": 999, "status": 3, "model_session_id": 1})
+    )
+    respx.post(f"{API}/predict/").mock(
+        return_value=httpx.Response(404, json={"detail": "Run not found"})
+    )
+    job_route = respx.post(f"{API}/job/")
+
+    out = await dashai_predict(Predict(run_id=999, dataset_id=4))
+    assert out.startswith("Error:")
+    assert not job_route.called
+
+
+@respx.mock
+async def test_predict_resolves_dataset_from_the_run_session():
+    """Omitting dataset_id uses the training dataset on the model session."""
+    respx.get(f"{API}/run/1").mock(
+        return_value=httpx.Response(200, json={"id": 1, "status": 3, "model_session_id": 7})
+    )
+    respx.get(f"{API}/model-session/7").mock(
+        return_value=httpx.Response(200, json={"id": 7, "dataset_id": 4})
+    )
+    created = respx.post(f"{API}/predict/").mock(
+        return_value=httpx.Response(200, json={"id": 12, "run_id": 1, "dataset_id": 4})
+    )
+    respx.post(f"{API}/job/").mock(return_value=httpx.Response(201, json={"id": "h"}))
+
+    out = json.loads(await dashai_predict(Predict(run_id=1)))
+    assert json.loads(created.calls[0].request.content) == {"run_id": 1, "dataset_id": 4}
+    assert out["dataset_id"] == 4
+    assert out["prediction_id"] == 12
+
+
+@respx.mock
+async def test_predict_refuses_an_unfinished_run():
+    respx.get(f"{API}/run/1").mock(
+        return_value=httpx.Response(200, json={"id": 1, "status": 2, "model_session_id": 7})
+    )
+    created = respx.post(f"{API}/predict/")
+    job_route = respx.post(f"{API}/job/")
+
+    out = await dashai_predict(Predict(run_id=1))
+    assert out.startswith("Error:")
+    assert "FINISHED" in out
+    assert not created.called
+    assert not job_route.called

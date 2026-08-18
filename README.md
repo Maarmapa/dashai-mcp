@@ -14,13 +14,15 @@ It gives an agent the same surface dashAI gives a person through its GUI: look a
 
 ## Status
 
-**v0.2.0 — verified against a running dashAI 0.9.7.post1.** 25 deterministic tests
-green, plus one complete end-to-end training run: `dashai_train_model` →
-`dashai_job_status` → `dashai_get_run` with metrics.
+**v0.2.1 — verified against a running dashAI 0.9.7.post1.** Deterministic tests
+(including the predict two-step path) plus a live run: `dashai_train_model` →
+`dashai_job_status` → `dashai_get_run` with metrics, and `dashai_predict` →
+`dashai_job_status` finished.
 
-Verifying against a live instance surfaced **four bugs that tests with doubles
-could not see**, all of them gaps between dashAI's documentation and its actual
-behaviour. They are described below and each one has its own regression test.
+Verifying against a live instance surfaced **gaps between dashAI's documentation
+and its actual behaviour**. Each one has its own regression test. A fifth —
+`dashai_predict` sending `run_id` to `PredictJob` — only showed up live
+(`KeyError: 'prediction_id'`) because there was no predict test.
 
 ## Install
 
@@ -59,7 +61,7 @@ dashAI has to be running separately (`dashai`, or the desktop app). It is looked
 | `dashai_get_run` | Configuration and metrics of a run |
 | `dashai_predict` | Predicts using the model of a finished run |
 
-## Four things dashAI's documentation gets wrong
+## Five things dashAI's documentation gets wrong
 
 Found by running against a real instance. If you are writing a client for this
 API, these will bite you:
@@ -70,6 +72,7 @@ API, these will bite you:
 | `POST /job/` with a JSON body | It is **form data**, with `kwargs` serialized as a JSON string. Its own `openapi.json` declares no `requestBody` for that route, because the endpoint parses `request` by hand. |
 | `splits` as an object | It travels as a **JSON string**: the Pydantic schema declares it `str`. |
 | `optimize(model_class, search_space, X, y, n_trials)` | The real signature is `optimize(model, input_dataset, output_dataset, parameters, metric)`, and `model` is an **instance**, not a class. |
+| Predict by `run_id` on the job | `PredictJob.run` requires `kwargs["prediction_id"]`. The GUI first `POST /predict/` (`{run_id, dataset_id}`) and only then enqueues. Sending `run_id` to the job raises `KeyError: 'prediction_id'`. |
 
 The component registry also has **13 types**, not the four the documentation
 suggests: `Task`, `GenerativeTask`, `Model`, `GenerativeModel`, `DataLoader`,
@@ -99,6 +102,8 @@ POST /job/             → enqueues the ModelJob
 With required fields the GUI fills in on its own and that are undocumented — `plot_history_path`, `plot_slice_path`, `plot_contour_path`, `plot_importance_path`. On top of that, **`splits` travels as a JSON string, not an object**, even though dashAI's documentation shows it as an object: the backend's Pydantic schema declares it `str`. That kind of detail is exactly what makes an agent fail against the raw API.
 
 Here it is a single call, and it **does not block**: training can take hours, so it returns the `job_id` immediately and progress is polled with `dashai_job_status`.
+
+`dashai_predict` does the same for the two-step GUI path: `POST /predict/` then `POST /job/` with `prediction_id`.
 
 ### 3. No tool deletes anything
 
