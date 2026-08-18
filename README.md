@@ -15,9 +15,21 @@ It gives an agent the same surface dashAI gives a person through its GUI: look a
 ## Status
 
 **v0.2.1 — verified against a running dashAI 0.9.7.post1.** Deterministic tests
-(including the predict two-step path) plus a live run: `dashai_train_model` →
+(including the predict two-step path) plus live runs: `dashai_train_model` →
 `dashai_job_status` → `dashai_get_run` with metrics, and `dashai_predict` →
 `dashai_job_status` finished.
+
+### Live tabular run (seed `students`)
+
+Public dashAI seed only. Target `placement_status` (~83% majority).  
+`exam_score` was **left out** of the inputs (it leaks the label). Split 70/15/15. Goal metric: **BalancedAccuracy** — Accuracy and F1 on the majority class are traps.
+
+| model | test BalancedAccuracy | test MCC | test F1 | test Accuracy |
+|---|---:|---:|---:|---:|
+| `DummyClassifier(most_frequent)` | 0.500 | 0.000 | **0.906** | 0.827 |
+| `RandomForestClassifier` (`class_weight=balanced`, depth 8, 100 trees) | **0.851** | **0.591** | 0.900 | 0.845 |
+
+The dummy *wins F1 and is close on Accuracy* by always answering the majority class. The forest is the one that actually separates classes. If a client reports only F1 here, it is lying.
 
 Verifying against a live instance surfaced **gaps between dashAI's documentation
 and its actual behaviour**. Each one has its own regression test. A fifth —
