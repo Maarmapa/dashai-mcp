@@ -32,18 +32,21 @@ Public dashAI seed only. Target `placement_status` (~83% majority).
 
 The dummy *wins F1* by always answering the majority class. The linear model beats the forest on the metrics that actually measure separation. Each row is its own 70/15/15 draw (not the same test rows) — still enough to stop treating the forest as the default. If a client reports only F1 here, it is lying.
 
-`dashai_predict` on the finished forest run returned `prediction_id` and the job finished (`Saving predictions`). That scores the **same seed dataset the model was trained on**, not a held-out file — do not read it as a generalization check. The MCP does not yet return the prediction table; the proof is the finished job, not a dumped column of labels.
+`dashai_predict` on the finished forest run returned `prediction_id` and the job finished. That scores the **same seed dataset the model was trained on**, not a held-out file — do not read it as a generalization check. `dashai_get_prediction` returns `{n, n_classes, class_counts}` only.
 
 ### Live image run (seed `cifar10-subset`)
 
 Public seed: 200 images, frog vs truck (100/100). `LeNet5ImageClassifier`, CPU, 32×32. Split 70/15/15 → **test n=30**. Chance is 0.5.
 
-| run | epochs | train Acc | val Acc | test Acc | test MCC |
-|---|---:|---:|---:|---:|---:|
-| 10 epochs | 10 | 0.879 | **0.467** | 0.633 | 0.000 |
-| 40 epochs | 40 | 0.950 | 0.733 | 0.867 | 0.000 |
+| run | shuffle/stratify | train BalAcc | val BalAcc | val MCC | test BalAcc | test MCC |
+|---|---|---:|---:|---:|---:|---:|
+| 10 epochs (poisoned) | off | 0.879* | 0.467* | 0.000 | 0.633* | 0.000 |
+| 40 epochs (poisoned) | off | 0.950* | 0.733* | 0.000 | 0.867* | 0.000 |
+| 40 epochs (`cifar10-lenet5-40ep-stratified`) | on | 1.000 | 0.767 | 0.544 | 0.900 | 0.816 |
 
-The image *path* works (job finished, metrics came back). The *0.867 is not a result*: dashAI defaulted `shuffle=False`, so val/test were 30 trucks and zero frogs. MCC 0 is sklearn on a one-class split, not a broken metric function. Do not quote the 0.867. Retrain with the shuffle/stratify this server now sends.
+\*Accuracy, not BalancedAccuracy — on the one-class val/test they collapse. Chance on this seed is **0.5**. Dummy tabular does not apply (image task).
+
+The image *path* works. The *0.867 is not a result*: dashAI defaulted `shuffle=False`, so val/test were 30 trucks and zero frogs. MCC 0 is sklearn on a one-class split. After this server sent `shuffle=true` + `stratify=true`, both classes are in val/test and MCC is no longer 0. Train hits 1.0 (140 images memorized). Val 0.767 is the honest-ish number; test 0.900 is a 30-row lottery. Do not publish a leaderboard line.
 
 Verifying against a live instance surfaced **gaps between dashAI's documentation
 and its actual behaviour**. Each one has its own regression test. A sixth —
