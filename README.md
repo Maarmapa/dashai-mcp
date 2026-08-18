@@ -53,11 +53,9 @@ and its actual behaviour**. Each one has its own regression test. A fifth —
 ## Install
 
 ```bash
-uv pip install git+https://github.com/Maarmapa/dashai-mcp
-# or: pip install git+https://github.com/Maarmapa/dashai-mcp
+pip install dashai-mcp
+# or: uv pip install dashai-mcp
 ```
-
-Not published on PyPI yet.
 
 In your MCP client configuration:
 
