@@ -1,0 +1,49 @@
+# Publica server.json en el Registro MCP oficial (registry.modelcontextprotocol.io).
+#
+# Manual (workflow_dispatch). La identidad se prueba con el token OIDC del propio
+# repositorio: el runner emite un id-token que certifica "esto corre en
+# Maarmapa/dashai-mcp", y el registro valida el namespace io.github.Maarmapa a
+# partir de ahí. Sin secretos.
+#
+# EL ORDEN IMPORTA, y equivocarse deja una entrada viva apuntando a nada. Para
+# paquetes de PyPI el registro NO mira el repositorio: descarga
+# https://pypi.org/pypi/<paquete>/<version>/json y exige encontrar el token
+# `mcp-name: <nombre-del-servidor>` dentro de `info.description`, que es el README
+# tal como quedó publicado EN ESA VERSIÓN. Y PyPI es inmutable: si una versión se
+# subió sin el marcador, no se arregla — hay que publicar una nueva.
+#
+# Por eso la guarda de abajo comprueba las dos cosas contra PyPI en vivo, con la
+# misma URL y el mismo token que usa el validador del registro, y se niega a
+# publicar si no calzan.
+name: Publish to MCP Registry
+on:
+  workflow_dispatch:
+
+permissions:
+  id-token: write   # token OIDC para mcp-publisher
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Comprueba lo mismo que el validador del registro, con la misma URL y el
+      # mismo patrón, antes de gastar una publicación. Ver el docstring del script.
+      - name: Verificar que el registro va a aceptar esto
+        run: python scripts/check_registry_ready.py
+
+      - name: Instalar mcp-publisher
+        run: |
+          curl -sL "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m | sed 's/x86_64/amd64/').tar.gz" | tar xz mcp-publisher
+
+      - name: Login (GitHub OIDC)
+        run: ./mcp-publisher login github-oidc
+
+      - name: Publicar
+        run: ./mcp-publisher publish

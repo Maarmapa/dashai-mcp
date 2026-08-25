@@ -1,5 +1,7 @@
 # dashai-mcp
 
+<!-- mcp-name: io.github.Maarmapa/dashai-mcp -->
+
 An [MCP](https://modelcontextprotocol.io) server for **[dashAI](https://github.com/DashAISoftware/DashAI)**, the open source Machine Learning workbench led by the University of Chile (FCFM), built by students of DCC UChile and UTFSM, with CENIA and IMFD.
 
 > **Unofficial and independent.** This is a third-party project. It is not

@@ -1,0 +1,38 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.Maarmapa/dashai-mcp",
+  "title": "dashAI (unofficial)",
+  "description": "Drive a running dashAI instance from an agent: list datasets, describe components, launch trainings, follow their status and predict. Read-oriented, with no delete tools.",
+  "version": "0.3.1",
+  "repository": {
+    "url": "https://github.com/Maarmapa/dashai-mcp",
+    "source": "github"
+  },
+  "packages": [
+    {
+      "registryType": "pypi",
+      "identifier": "dashai-mcp",
+      "version": "0.3.1",
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": [
+        {
+          "name": "DASHAI_BASE_URL",
+          "description": "URL of the dashAI backend. Defaults to http://localhost:8000.",
+          "isRequired": false
+        },
+        {
+          "name": "DASHAI_ALLOW_REMOTE",
+          "description": "Set to 1 to allow a non-localhost backend. dashAI's API has no authentication, so pointing this server at a remote host exposes an ML backend with no door on it — read the README before enabling.",
+          "isRequired": false
+        },
+        {
+          "name": "DASHAI_TIMEOUT",
+          "description": "Seconds to wait per request. Defaults to 30.",
+          "isRequired": false
+        }
+      ]
+    }
+  ]
+}
