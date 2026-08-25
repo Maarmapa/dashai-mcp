@@ -33,6 +33,103 @@ from .config import base_url
 
 mcp = MCPServer(name="dashai_mcp", version=__version__)
 
+# The dashAI release this server was last verified against, live and end to
+# end (every tool exercised, including a real train → predict loop).
+VERIFIED_DASHAI = "0.9.7.post1"
+
+# Path prefixes this server calls, as they appear in dashAI's OpenAPI schema.
+_USED_PATH_PREFIXES = (
+    "/dataset",
+    "/component",
+    "/model-session",
+    "/run",
+    "/job",
+    "/predict",
+)
+
+# Fields sent when creating a model session (see dashai_train_model, step 1).
+_MODEL_SESSION_FIELDS_SENT = frozenset(
+    {
+        "dataset_id",
+        "task_name",
+        "name",
+        "input_columns",
+        "output_columns",
+        "train_metrics",
+        "validation_metrics",
+        "test_metrics",
+        "splits",
+    }
+)
+
+
+async def _api_compat() -> Dict[str, Any]:
+    """Best-effort check that the live API still looks like the one verified.
+
+    dashAI exposes no version endpoint (checked against 0.9.7: no such route,
+    and its FastAPI apps are built without ``version=``), so the only honest
+    signal is the OpenAPI schema: do the endpoints this server calls still
+    exist, and does POST /model-session/ require fields this server does not
+    send? That second question is not hypothetical — dashAI's development
+    branch already adds an ``evaluation_strategy`` field to model sessions.
+
+    Never raises: server_info must keep answering against an instance that
+    cannot serve its schema, and a failed check is reported as ``unknown``,
+    not as an error.
+    """
+    result: Dict[str, Any] = {"verified_against": f"dashAI {VERIFIED_DASHAI}"}
+    try:
+        schema = await client.get("openapi.json")
+        paths = list((schema or {}).get("paths", {}))
+        missing = [
+            prefix
+            for prefix in _USED_PATH_PREFIXES
+            if not any(p.startswith(prefix) for p in paths)
+        ]
+
+        body = (
+            (schema.get("paths", {}).get("/model-session/", {}))
+            .get("post", {})
+            .get("requestBody", {})
+            .get("content", {})
+            .get("application/json", {})
+            .get("schema", {})
+        )
+        if "$ref" in body:
+            ref_name = body["$ref"].rsplit("/", 1)[-1]
+            body = schema.get("components", {}).get("schemas", {}).get(ref_name, {})
+        required = set(body.get("required", []))
+        unsent = sorted(required - _MODEL_SESSION_FIELDS_SENT)
+
+        warnings = []
+        if missing:
+            warnings.append(
+                "endpoints this server needs are missing: " + ", ".join(missing)
+            )
+        if unsent:
+            warnings.append(
+                "POST /model-session/ requires fields this server does not "
+                "send: " + ", ".join(unsent)
+            )
+        if warnings:
+            result["status"] = "mismatch"
+            result["warnings"] = warnings
+            result["note"] = (
+                f"This dashAI's API differs from {VERIFIED_DASHAI}, the last "
+                "release verified end to end; dashai_train_model may fail. "
+                "Check for a newer dashai-mcp before blaming the instance."
+            )
+        else:
+            result["status"] = "ok"
+    except Exception:  # noqa: BLE001 — best effort by design, see docstring
+        result["status"] = "unknown"
+        result["note"] = (
+            "Could not read openapi.json to compare the API surface; "
+            "everything else may still work."
+        )
+    return result
+
+
 # RunStatus arrives as an integer. Names taken from
 # DashAI/back/core/enums/status.py (dashAI 0.9.7.post1).
 RUN_STATUS = {
@@ -342,7 +439,13 @@ async def dashai_server_info(params: NoArgs) -> str:
             "reachable": bool,    # whether it responded
             "datasets": int,      # number of loaded datasets
             "runs": int,          # number of recorded runs
-            "queue_empty": bool   # whether the job queue is empty
+            "queue_empty": bool,  # whether the job queue is empty
+            "compatibility": {    # live API vs the release verified end to end
+                "verified_against": str,   # e.g. "dashAI 0.9.7.post1"
+                "status": str,             # "ok" | "mismatch" | "unknown"
+                "warnings": [str],         # only on mismatch: what differs
+                "note": str                # only on mismatch/unknown
+            }
         }
         On failure: "Error: <what happened and what to do>".
     """
@@ -360,6 +463,7 @@ async def dashai_server_info(params: NoArgs) -> str:
             "datasets": len(datasets or []),
             "runs": len(runs or []),
             "queue_empty": queue.get("is_empty") if isinstance(queue, dict) else queue,
+            "compatibility": await _api_compat(),
         }
     )
 
