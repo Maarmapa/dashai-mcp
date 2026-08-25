@@ -169,6 +169,34 @@ python -m venv .venv && .venv/bin/pip install -e ".[dev]"
 
 The tests stub the HTTP responses with `respx`: **they need neither a dashAI instance nor credentials**. They test the contract — which calls are made, in what order, with what body, and what the agent is told when something fails.
 
+### Verifying against a live instance
+
+A client tested only against stubs is a hypothesis. `scripts/smoke_live.py`
+exercises every tool against a real running dashAI, through the same code
+paths an agent uses:
+
+```bash
+python scripts/smoke_live.py            # read-only tools
+python scripts/smoke_live.py --train    # + a real train -> predict loop
+```
+
+The `--train` loop creates a model session, a run and a prediction on the
+target instance — point it at a scratch instance, not a production one. Exit
+code 0 only if every exercised tool worked. This is how each release gets
+verified; the version it was last run against is what
+`dashai_server_info` reports under `compatibility.verified_against`.
+
+### API compatibility check
+
+dashAI exposes no version endpoint, so `dashai_server_info` reads the
+instance's `openapi.json` and compares the API surface against what this
+server actually calls: are the endpoints still there, and does
+`POST /model-session/` require fields this server does not send? The verdict
+comes back as `compatibility.status` — `ok`, `mismatch` (with the exact
+differences named) or `unknown` (schema unreadable; everything else may
+still work). The case it exists for is real: dashAI's development branch
+already adds an `evaluation_strategy` field to model sessions.
+
 ## A note on the SDK
 
 Requires the MCP Python SDK **2.x**. Version 2.0 removed `mcp.server.fastmcp`; it is now `mcp.server.mcpserver.MCPServer`, and annotations are `ToolAnnotations` objects instead of dictionaries. Most tutorials still show the 1.x API.
