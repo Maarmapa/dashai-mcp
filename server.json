@@ -2,7 +2,7 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.Maarmapa/dashai-mcp",
   "title": "dashAI (unofficial)",
-  "description": "Drive a running dashAI instance from an agent: list datasets, describe components, launch trainings, follow their status and predict. Read-oriented, with no delete tools.",
+  "description": "Train, track and query models on a running dashAI instance. Read-oriented, no delete tools.",
   "version": "0.3.1",
   "repository": {
     "url": "https://github.com/Maarmapa/dashai-mcp",
