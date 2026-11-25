@@ -83,13 +83,13 @@ async def test_new_required_field_is_named():
     the day that ships, server_info has to say so instead of letting
     dashai_train_model fail with a bare 422.
     """
-    required = set(_MODEL_SESSION_FIELDS_SENT) | {"evaluation_strategy"}
+    required = set(_MODEL_SESSION_FIELDS_SENT) | {"brand_new_field"}
     respx.get(f"{API}/openapi.json").mock(
         return_value=httpx.Response(200, json=_openapi(required=required))
     )
     out = await _api_compat()
     assert out["status"] == "mismatch"
-    assert any("evaluation_strategy" in w for w in out["warnings"])
+    assert any("brand_new_field" in w for w in out["warnings"])
 
 
 @respx.mock

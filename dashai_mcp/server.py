@@ -25,7 +25,7 @@ from typing import Any, Dict, List, Optional
 
 from mcp.server.mcpserver import MCPServer
 from mcp.types import ToolAnnotations
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from . import __version__, client
 from .client import DashAIError
@@ -35,7 +35,7 @@ mcp = MCPServer(name="dashai_mcp", version=__version__)
 
 # The dashAI release this server was last verified against, live and end to
 # end (every tool exercised, including a real train → predict loop).
-VERIFIED_DASHAI = "0.9.7.post1"
+VERIFIED_DASHAI = "0.11.0"
 
 # Path prefixes this server calls, as they appear in dashAI's OpenAPI schema.
 _USED_PATH_PREFIXES = (
@@ -48,16 +48,19 @@ _USED_PATH_PREFIXES = (
 )
 
 # Fields sent when creating a model session (see dashai_train_model, step 1).
+# dashAI 0.11.0 replaced input_columns/output_columns with column_roles and
+# made evaluation_strategy required; the old pair is now refused outright
+# (ModelSessionParams forbids extra fields).
 _MODEL_SESSION_FIELDS_SENT = frozenset(
     {
         "dataset_id",
         "task_name",
         "name",
-        "input_columns",
-        "output_columns",
+        "column_roles",
         "train_metrics",
         "validation_metrics",
         "test_metrics",
+        "evaluation_strategy",
         "splits",
     }
 )
@@ -156,6 +159,15 @@ CLASSIFICATION_TASKS = frozenset(
     }
 )
 
+# Splitters for these refuse the holdout parameters (shuffle, stratify): they
+# cut origins, not rows. Sending shuffle to one is a 422.
+FORECASTING_TASKS = frozenset({"SingleSeriesForecastingTask"})
+
+# The evaluation strategy a session is created with. Holdout is what the
+# wizard starts on and what a 70/15/15 split means; the name is the registry
+# key, not the display name ("Holdout").
+DEFAULT_EVALUATION_STRATEGY = "HoldoutEvaluationStrategy"
+
 # Keys that would dump a prediction column into the agent. Stripped if a
 # future dashAI version starts returning them on GET /predict/.
 _PREDICTION_ROW_KEYS = frozenset(
@@ -217,10 +229,86 @@ def _splits_for_session(params: "TrainModel") -> str:
     class. Accuracy still moves; sklearn's MCC is defined as 0.
     """
     payload: Dict[str, Any] = dict(params.splits)
-    payload.setdefault("shuffle", True)
+    # Temporal splitters cut origins, not rows: shuffle/stratify are not in
+    # their schema and are refused.
+    if params.task_name not in FORECASTING_TASKS:
+        payload.setdefault("shuffle", True)
     if params.task_name in CLASSIFICATION_TASKS:
         payload.setdefault("stratify", True)
     return json.dumps(payload)
+
+
+# Roles declared per task, cached for the process: they come from the
+# component registry and do not change while dashAI runs.
+_TASK_ROLES_CACHE: Dict[str, List[Dict[str, Any]]] = {}
+
+
+async def _task_column_roles(task_name: str) -> List[Dict[str, Any]]:
+    """The roles a task declares, read from its registry metadata.
+
+    dashAI 0.11.0 replaced ``input_columns`` / ``output_columns`` with a role
+    map, and the role names are not the same across tasks: ``features`` and
+    ``target`` for tabular, text and image; ``time_index``, ``series`` and
+    ``exogenous`` for forecasting; ``features`` alone for clustering. They are
+    read rather than hardcoded so a plugin task works too.
+    """
+    if task_name in _TASK_ROLES_CACHE:
+        return _TASK_ROLES_CACHE[task_name]
+    data = await client.get("component/", params={"select_types": "Task"})
+    for component in data or []:
+        if component.get("name") == task_name:
+            roles = (component.get("metadata") or {}).get("column_roles") or []
+            _TASK_ROLES_CACHE[task_name] = roles
+            return roles
+    return []
+
+
+def _raw_refs(columns: List[str]) -> List[Dict[str, str]]:
+    """A column name list as dashAI's ColumnRef objects."""
+    return [{"kind": "raw", "name": column} for column in columns]
+
+
+async def _build_column_roles(params: "TrainModel") -> Dict[str, List[Dict[str, str]]]:
+    """Builds the ``column_roles`` map a model session requires.
+
+    An explicit ``column_roles`` wins. Otherwise the task's own roles decide
+    where the flat ``input_columns`` / ``output_columns`` go, which keeps the
+    old, simpler call shape working for the common tasks.
+    """
+    if params.column_roles:
+        return {
+            role: _raw_refs(columns)
+            for role, columns in params.column_roles.items()
+            if columns
+        }
+
+    names = [role.get("name") for role in await _task_column_roles(params.task_name)]
+
+    if "target" in names:
+        if not params.output_columns:
+            raise ValueError(
+                f"{params.task_name} needs an output column: pass output_columns "
+                "(or column_roles with the 'target' role)."
+            )
+        return {
+            "features": _raw_refs(params.input_columns),
+            "target": _raw_refs(params.output_columns),
+        }
+
+    if "series" in names:
+        raise ValueError(
+            f"{params.task_name} needs explicit column_roles, because "
+            "input_columns cannot say which column is the date: pass e.g. "
+            "{'time_index': ['date'], 'series': ['value'], 'exogenous': ['x1']}."
+        )
+
+    if len(names) == 1:
+        return {names[0]: _raw_refs(params.input_columns)}
+
+    raise ValueError(
+        f"Task {params.task_name} declares the roles {names}. Pass column_roles "
+        "to say which columns go in each one."
+    )
 
 
 def _metric_warnings(run: Dict[str, Any]) -> List[str]:
@@ -334,8 +422,38 @@ class TrainModel(BaseModel):
         ),
         min_length=1,
     )
-    input_columns: List[str] = Field(..., description="Input columns (features)", min_length=1)
-    output_columns: List[str] = Field(..., description="Output columns (target)", min_length=1)
+    input_columns: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Input columns (features). Ignored if column_roles is given. "
+            "Required unless column_roles is given."
+        ),
+    )
+    output_columns: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Output columns (target). Ignored if column_roles is given. "
+            "Required unless column_roles is given."
+        ),
+    )
+    column_roles: Optional[Dict[str, List[str]]] = Field(
+        default=None,
+        description=(
+            "Explicit role → columns, as the task declares its roles. Overrides "
+            "input_columns/output_columns. E.g. {'features': ['a','b'], "
+            "'target': ['y']}. For SingleSeriesForecastingTask: "
+            "{'time_index': ['date'], 'series': ['value'], 'exogenous': ['x1']}."
+        ),
+    )
+    evaluation_strategy: str = Field(
+        default=DEFAULT_EVALUATION_STRATEGY,
+        description=(
+            "Evaluation strategy, from dashai_list_components(types="
+            "['EvaluationStrategy']). Defaults to HoldoutEvaluationStrategy "
+            "(a single 70/15/15 cut)."
+        ),
+        min_length=1,
+    )
     metrics: List[str] = Field(
         ...,
         description=(
@@ -374,6 +492,17 @@ class TrainModel(BaseModel):
         if abs(total - 1.0) > 1e-6:
             raise ValueError(f"The split proportions add up to {total}, they must add up to 1.0")
         return v
+
+    @model_validator(mode="after")
+    def _columns_given(self) -> "TrainModel":
+        if self.column_roles:
+            return self
+        if not self.input_columns:
+            raise ValueError(
+                "Provide column_roles, or at least one input column in "
+                "input_columns (a clustering task takes no output column)."
+            )
+        return self
 
 
 class JobStatus(BaseModel):
@@ -612,6 +741,10 @@ async def dashai_train_model(params: TrainModel) -> str:
     name = params.run_name or f"{params.model_name} on dataset {params.dataset_id}"
 
     try:
+        # dashAI 0.11.0 wants a role map, not two column lists, and refuses the
+        # old fields outright. The roles come from the task itself.
+        column_roles = await _build_column_roles(params)
+
         # 1. Model session (experiment).
         # `splits` travels as a JSON string: dashAI declares it as str, not dict,
         # even though its documentation shows it as an object.
@@ -621,11 +754,11 @@ async def dashai_train_model(params: TrainModel) -> str:
                 "dataset_id": params.dataset_id,
                 "task_name": params.task_name,
                 "name": name,
-                "input_columns": params.input_columns,
-                "output_columns": params.output_columns,
+                "column_roles": column_roles,
                 "train_metrics": params.metrics,
                 "validation_metrics": params.metrics,
                 "test_metrics": params.metrics,
+                "evaluation_strategy": params.evaluation_strategy,
                 "splits": _splits_for_session(params),
             },
         )
@@ -656,6 +789,8 @@ async def dashai_train_model(params: TrainModel) -> str:
 
     except DashAIError as e:
         return _error(e)
+    except ValueError as e:
+        return f"Error: {e}"
     except (KeyError, TypeError) as e:
         return f"Error: dashAI responded with an unexpected shape ({e}). Check its version."
 
@@ -1002,9 +1137,29 @@ async def _output_column_for_run(run_id: Any) -> Optional[str]:
         session = await client.get(f"model-session/{session_id}")
     except DashAIError:
         return None
-    cols = session.get("output_columns") if isinstance(session, dict) else None
+    if not isinstance(session, dict):
+        return None
+    cols = session.get("output_columns")
     if isinstance(cols, list) and cols:
         return str(cols[0])
+    # 0.11.0 dropped output_columns. A session *accepts* column_roles as
+    # role -> [ColumnRef], but *stores and returns* it as
+    # role -> {"refs": [ColumnRef], "columns": [name]}.
+    roles = session.get("column_roles")
+    if isinstance(roles, dict):
+        for role in ("target", "series"):
+            value = roles.get(role)
+            if isinstance(value, dict):
+                columns = value.get("columns")
+                if isinstance(columns, list) and columns:
+                    return str(columns[0])
+                value = value.get("refs")
+            if isinstance(value, list) and value:
+                first = value[0]
+                if isinstance(first, dict) and first.get("name"):
+                    return str(first["name"])
+                if isinstance(first, str):
+                    return first
     return None
 
 

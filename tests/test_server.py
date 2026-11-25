@@ -12,6 +12,7 @@ import pytest
 import respx
 
 from dashai_mcp import client, config
+from dashai_mcp import server as server_module
 from dashai_mcp.server import (
     DescribeDataset,
     GetPrediction,
@@ -42,6 +43,29 @@ def clean_env(monkeypatch):
     """Every test starts from a known environment."""
     monkeypatch.delenv("DASHAI_BASE_URL", raising=False)
     monkeypatch.delenv("DASHAI_ALLOW_REMOTE", raising=False)
+    server_module._TASK_ROLES_CACHE.clear()
+
+
+TABULAR_ROLES = [
+    {"name": "features", "label": "Features", "types": ["Float", "Integer", "Categorical"],
+     "min": 0, "max": "n", "required": False},
+    {"name": "target", "label": "Target", "types": ["Categorical"],
+     "min": 1, "max": 1, "required": True},
+]
+
+
+def mock_task_roles(roles=TABULAR_ROLES, task="TabularClassificationTask"):
+    """The role map read before creating a session (dashAI 0.11.0+).
+
+    Roles moved out of the request body and into the task's registry metadata;
+    the server reads them to turn input_columns/output_columns into a role map.
+    """
+    return respx.get(f"{API}/component/", params={"select_types": "Task"}).mock(
+        return_value=httpx.Response(
+            200,
+            json=[{"name": task, "type": "Task", "metadata": {"column_roles": roles}}],
+        )
+    )
 
 
 # --- The network lock --------------------------------------------------------
@@ -84,12 +108,13 @@ async def test_dashai_down_says_how_to_start_it():
 
 @respx.mock
 async def test_422_points_at_list_components():
+    mock_task_roles()
     respx.post(f"{API}/model-session/").mock(
         return_value=httpx.Response(422, json={"detail": "Unknown task 'Clasificacion'"})
     )
     out = await dashai_train_model(
         TrainModel(
-            dataset_id=1, task_name="Clasificacion", model_name="RandomForest",
+            dataset_id=1, task_name="TabularClassificationTask", model_name="RandomForest",
             input_columns=["a"], output_columns=["b"], metrics=["Accuracy"], goal_metric="Accuracy",
         )
     )
@@ -136,6 +161,7 @@ async def test_goal_metric_must_be_in_metrics():
 
 @respx.mock
 async def test_training_chains_the_three_calls():
+    mock_task_roles()
     session = respx.post(f"{API}/model-session/").mock(return_value=httpx.Response(201, json={"id": 7}))
     run = respx.post(f"{API}/run/").mock(return_value=httpx.Response(201, json={"id": 42}))
     job = respx.post(f"{API}/job/").mock(return_value=httpx.Response(201, json={"id": "huey-abc"}))
@@ -166,6 +192,13 @@ async def test_training_chains_the_three_calls():
     assert sent_splits["stratify"] is True
     # The metrics apply to all three splits.
     assert session_body["train_metrics"] == session_body["test_metrics"] == ["Accuracy", "F1"]
+    # 0.11.0: a role map, not two column lists, and the strategy is required.
+    assert session_body["column_roles"] == {
+        "features": [{"kind": "raw", "name": "length"}, {"kind": "raw", "name": "width"}],
+        "target": [{"kind": "raw", "name": "species"}],
+    }
+    assert "input_columns" not in session_body and "output_columns" not in session_body
+    assert session_body["evaluation_strategy"] == "HoldoutEvaluationStrategy"
 
     # The run links to the session just created and sends the required plot_path fields.
     run_body = json.loads(run.calls[0].request.content)
@@ -182,12 +215,14 @@ async def test_training_chains_the_three_calls():
 
 @respx.mock
 async def test_if_the_session_fails_nothing_is_enqueued():
+    mock_task_roles()
     respx.post(f"{API}/model-session/").mock(return_value=httpx.Response(404, json={"detail": "Dataset does not exist"}))
     job_route = respx.post(f"{API}/job/")
 
     out = await dashai_train_model(
         TrainModel(
-            dataset_id=999, task_name="T", model_name="M", input_columns=["a"], output_columns=["b"],
+            dataset_id=999, task_name="TabularClassificationTask", model_name="M",
+            input_columns=["a"], output_columns=["b"],
             metrics=["Accuracy"], goal_metric="Accuracy",
         )
     )
@@ -293,6 +328,7 @@ async def test_the_job_is_enqueued_as_form_data():
     respx.post(f"{API}/model-session/").mock(return_value=httpx.Response(201, json={"id": 1}))
     respx.post(f"{API}/run/").mock(return_value=httpx.Response(201, json={"id": 1}))
     job = respx.post(f"{API}/job/").mock(return_value=httpx.Response(201, json={"id": "h1"}))
+    mock_task_roles()
 
     await dashai_train_model(
         TrainModel(

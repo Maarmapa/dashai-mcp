@@ -16,10 +16,12 @@ It gives an agent the same surface dashAI gives a person through its GUI: look a
 
 ## Status
 
-**v0.2.2 — verified against a running dashAI 0.9.7.post1.** Deterministic tests
-(including the predict two-step path) plus live runs: `dashai_train_model` →
-`dashai_job_status` → `dashai_get_run` with metrics, and `dashai_predict` →
-`dashai_job_status` finished.
+**v0.3.2 — verified against dashAI 0.11.0** (live train + predict loop, 48
+deterministic tests). `dashai_train_model` now sends the `column_roles` map and
+`evaluation_strategy` that 0.11.0 requires, and the compatibility check
+(`dashai_server_info`) reports `ok` instead of `mismatch` against 0.11.0.
+
+Previous release (v0.3.1) was verified against dashAI 0.9.7.post1 only.
 
 ### Live tabular run (seed `students`)
 
